@@ -56,3 +56,8 @@
 - npm install 成功（167 包）；tsc --noEmit 通过。
 - 用 esbuild 以 Paseo 同样的 external 列表（@getpaseo/plugin/*、zod）打包 `@getpaseo/client@0.11.4` + `@larksuite/channel@0.7.1`：成功，约 14.9MB；在项目目录下 require 可加载，两个入口函数都是 function。bufferutil/utf-8-validate 是 ws 的可选依赖（try/catch），不影响。
 - 尚未验证：paseo plugin add 的真实加载（daemon 的 pluginsEnabled 未开，开关属于用户的全局设置，不替用户打开）。
+
+## 实现阶段教训
+- 子代理 worktree 完成后会被清理，分支也可能消失；只有 commit 对象留存为 dangling。Writer C 靠 `git fsck --lost-found` 找回（现挂在分支 writer-c，已合入 master）。收到完成通知后**立即**合并，不要拖。
+- Writer C 报告 "tsc 通过"，合入后实测有 1 处类型错误（session.ts recordDelivery 返回类型），已修。报告里的"通过"必须自己复跑。
+- 在没有 node_modules 的目录里 `npx vitest` 会临时拉最新版（v5），结果不可信；先 `npm ci`。

@@ -136,7 +136,10 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     await safeSendText(chatId, `当前绑定：Agent ${short(agentId)}（bindingRevision ${rev}）。`);
   }
 
-  function recordDelivery(messageId: string, result: SendResult): SendResult["reason"] | "accepted" {
+  function recordDelivery(
+    messageId: string,
+    result: SendResult,
+  ): "accepted" | Exclude<SendResult, { ok: true }>["reason"] {
     if (result.ok) {
       state.deliveries[messageId] = { state: "accepted", at: now() };
       return "accepted";
