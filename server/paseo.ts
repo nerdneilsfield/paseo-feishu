@@ -216,22 +216,15 @@ export function createPaseoPort(
     },
 
     async getPendingPermissions(agentId: string): Promise<PendingPermission[]> {
-      if (!isConnected()) return [];
+      // 查询失败必须抛错，不能返回 []：调用方会把“没找到”当成“已在别处处理”并永久记录。
+      if (!isConnected()) throw new Error("paseo not connected");
       const handle = client.agents.ref(agentId);
-      try {
-        // ref() 之后 pendingPermissions 为 null，必须先 refresh() 再读。
-        const result = await handle.refresh();
-        if (!result) return [];
-        return (handle.pendingPermissions ?? []).map((request) =>
-          toPendingPermission(agentId, request),
-        );
-      } catch (err) {
-        console.error(
-          `[paseo-feishu] getPendingPermissions failed agent=${agentId}:`,
-          err instanceof Error ? err.message : err,
-        );
-        return [];
-      }
+      // ref() 之后 pendingPermissions 为 null，必须先 refresh() 再读。
+      const result = await handle.refresh();
+      if (!result) return [];
+      return (handle.pendingPermissions ?? []).map((request) =>
+        toPendingPermission(agentId, request),
+      );
     },
 
     async respondToPermission(

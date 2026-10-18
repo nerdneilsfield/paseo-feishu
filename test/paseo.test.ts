@@ -250,6 +250,14 @@ describe("createPaseoPort", () => {
     expect(perms[0]!.requestId).toBe("req-1");
   });
 
+  it("getPendingPermissions 查询失败或未连接时抛错，不返回 []", async () => {
+    const { client } = setupClient();
+    const port = createPaseoPort({ paseoUrl: "ws://x" });
+    const h = refHandle(client, "a1");
+    h.refresh.mockRejectedValue(new Error("boom"));
+    await expect(port.getPendingPermissions("a1")).rejects.toThrow("boom");
+  });
+
   it("respondToPermission：不在 pending 返回 not_pending，用对应 behavior 的 actionId", async () => {
     const { client } = setupClient();
     const port = createPaseoPort({ paseoUrl: "ws://x" });

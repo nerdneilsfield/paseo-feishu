@@ -107,7 +107,7 @@ export interface PaseoPort {
   /** 返回 null 表示不存在。内部必须先 refresh()。 */
   refreshAgent(agentId: string): Promise<AgentSummary | null>;
   send(agentId: string, text: string): Promise<SendResult>;
-  /** 内部必须先 refresh() 再读，因为 ref() 之后 pendingPermissions 为 null。 */
+  /** 内部必须先 refresh() 再读，因为 ref() 之后 pendingPermissions 为 null。未连接或查询失败时抛错（不返回 []）；Agent 不存在返回 []。 */
   getPendingPermissions(agentId: string): Promise<PendingPermission[]>;
   respondToPermission(
     agentId: string,

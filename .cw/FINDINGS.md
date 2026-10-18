@@ -61,3 +61,7 @@
 - 子代理 worktree 完成后会被清理，分支也可能消失；只有 commit 对象留存为 dangling。Writer C 靠 `git fsck --lost-found` 找回（现挂在分支 writer-c，已合入 master）。收到完成通知后**立即**合并，不要拖。
 - Writer C 报告 "tsc 通过"，合入后实测有 1 处类型错误（session.ts recordDelivery 返回类型），已修。报告里的"通过"必须自己复跑。
 - 在没有 node_modules 的目录里 `npx vitest` 会临时拉最新版（v5），结果不可信；先 `npm ci`。
+
+## 实机验证（本机 daemon 0.11.4，无密码）
+- `createPaseoPort`（真实 `@getpaseo/client`）：connect → isReady=true；listAgents 返回 5 个；refreshAgent 正常；不存在的 id 返回 null；getPendingPermissions=0；close 连续两次 1ms，isReady=false。
+- 未验证：send（会向真实 agent 发消息，不在冒烟测试里做）、respondToPermission、带密码路径、插件加载（D3）、全部飞书侧。
