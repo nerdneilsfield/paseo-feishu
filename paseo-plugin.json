@@ -1,0 +1,6 @@
+{
+  "id": "paseo-feishu",
+  "name": "Paseo Feishu",
+  "requirements": { "paseo": ">=0.11.4" },
+  "build": [["npm", "ci", "--omit=dev"]]
+}

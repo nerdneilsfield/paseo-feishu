@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# paseo-feishu
+node_modules/
+.cw/meter.jsonl

@@ -48,20 +48,33 @@ Paseo Feishu Server Plugin  (one daemon subprocess)
 
 **插件注册时传入的 `PluginServerContext` 没有长期可调用的 `server.paseo` 成员**；`paseo` 在 hook/RPC handler 的 context 内。飞书消息与点击卡片并非由这些 hook 发起，所以主动处理时用 `createPaseoClient({ url, password? })` 建立本机连接；hook 内直接使用 `context.paseo`，不用为读取 hook 事件再建额外连接。
 
-实现前必须进行最小联调：在 daemon 插件子进程中连接 daemon 自己的 WS 地址能否认证、建立会话、列出 Agents；失败时要给出明确部署诊断，不能静默降级到 shell/CLI。
+**已对照 Paseo 源码核实（本地 clone，见 `.cw/FINDINGS.md`）：**
+
+- `context.paseo` 是插件子进程内唯一的、与进程同寿命的 `PaseoApi`，通过 IPC 连接 daemon，无需密码；但它只出现在 hook / RPC handler 的 context 中。启动后没有会立即触发的 hook，插件 RPC 又只能由外部客户端调用，所以飞书侧的主动操作不能依赖它，也不能等到“第一个 hook 到来再捕获”（会让冷启动窗口违反 A01、A12）。
+- 因此飞书主动路径使用公开 API `createPaseoClient({ url, password? })`。**公开 `PaseoClientConfig` 没有 `localCredential`，不得为此引用 `@getpaseo/client/internal/*`。**
+- daemon 未设密码时直接放行；设置了密码就必须提供明文密码（持久化的是 bcrypt 哈希，插件无法反推）。插件子进程继承 daemon 的环境变量，密码若由 `PASEO_PASSWORD` 提供可直接读取，否则需用户在插件配置中给出。
+- `contribute()` 必须**同步**返回 cleanup 函数。在函数体内 `void client.connect()` 并启动飞书长连接，不得写成 `async`。
+- 连接未就绪时，对飞书消息和卡片点击显式回复“Paseo 未连接，消息未发送”。不排队，不在恢复后自动重投（见 A10、A14）。断线后依赖 client 自带重连，再用 `timeline.refetch` 与 `pendingPermissions` 补查。
+- hook 内继续使用 `context.paseo`，与自建 client 两条路径互不依赖。
+
+实现前仍要做最小联调：在 daemon 插件子进程内用 `createPaseoClient` 连接默认 `ws://127.0.0.1:6767/ws`，验证有/无密码时的认证、建立会话、列出 Agents；失败时要给出明确部署诊断，不能静默降级到 shell/CLI。v0.1 只支持 TCP loopback；daemon 监听 unix socket 时公开 client 是否可用**未核实**。
 
 ### 2.2 依赖
 
 | 依赖 | 作用 | 约束 |
 | --- | --- | --- |
 | `@getpaseo/plugin/server` | server entry / lifecycle hooks | 与实际安装的 Paseo daemon SDK 版本匹配 |
-| `@getpaseo/client` | 已有 Agent 查询、消息与权限接口 | Node.js 22+ |
+| `@getpaseo/client` | 已有 Agent 查询、消息与权限接口 | Node.js 22+（默认 WS 传输依赖 `globalThis.WebSocket`）。**不是宿主模块**，必须随插件打包或安装到插件 `node_modules`；版本以 daemon 实际运行版本为准 |
 | `@larksuite/channel` | 飞书长连接、消息标准化、卡片发送、交互回调 | 确认生产包版本并锁定 |
 | `zod`（可复用） | 配置和回调 payload 结构校验 | 仅简单校验，不引入额外框架 |
 
 在 2026-10-19 检查的源码中，Paseo 插件包为 `0.11.2`，飞书 Channel 包的仓库 `package.json` 为 `0.7.1`。它们是**源码检查时的版本，不是自动宣称已验证的发布兼容矩阵**；实现需与 daemon 实际安装版本对齐，并锁定经过测试的依赖。
 
-Paseo host 自带的库应按官方插件规范处理；`@larksuite/channel` 等真正运行时依赖必须可被安装包解析。以根目录 `paseo-plugin.json` 及 `index.server.ts` 为插件入口，使用 Paseo 官方目录/ Git 安装方式，不 fork Paseo。
+Paseo host 只提供 `@getpaseo/plugin/*` 与 `zod`；`@larksuite/channel`、`@getpaseo/client` 等运行时依赖不是宿主模块，必须能被 esbuild 打进 bundle，或位于插件目录的 `node_modules`。`npm` 包形式安装时 daemon 会执行 `npm install --omit=dev`；目录 / Git 源不会自动安装依赖，需在 `paseo-plugin.json` 的 `build`（argv 数组，不经过 shell）里写 `["npm", "ci", "--omit=dev"]`。
+
+以根目录 `paseo-plugin.json`（最小形态：`id` 与 `requirements.paseo`）及 `index.server.ts`（默认导出 `contribute(server)`）为插件入口；插件默认不启动，须 `pluginsEnabled` 开启后用 `paseo plugin add <路径>` 安装。不 fork Paseo。
+
+**版本（已核实）：** 开发机上的 daemon 是 `0.11.4`（`paseo --version`），npm 上 `@getpaseo/{plugin,client,protocol}` 的最新稳定版也是 `0.11.4`。文中的源码结论读自上游 `main`（0.12.0-beta.3），已对照 `v0.11.4` tag：`plugin-process.ts`、`runtime.ts`、`bundle-evaluator.ts`、`plugin-sdk-specifiers.ts`、`plugin/src/server/{contracts,lifecycle}.ts`、`session-admission-auth.ts` 与 `main` 相同；`compiler.ts` 与 `client/src/index.ts` 仅有与本插件无关的小差异；`agent-manager.ts` 的 hook 派发点与 `shouldDispatchEvent` 逻辑同样存在于 `0.11.4`。依赖版本锁定为 `0.11.4`。
 
 ## 3. 外部 API 映射
 
@@ -164,7 +177,16 @@ Bot → User: KVMux · Relay 审阅 · 已完成 + 简短结果
 
 ### 5.3 Channel 队列约束
 
-飞书 Channel 的 `safety.chatQueue.cardActions` 有 `same` / `separate` 两种模式。v0.1 可以使用默认 `same`，前提是 `message` handler **绝不等待完整 Agent 执行，也绝不等待用户之后点击审批卡片**，卡片 handler 只处理短事务和即时反馈。
+已对照 `@larksuite/channel` 源码核实（`channel-sdk-node/src/safety/index.ts:75`、`types.ts:475-503`）：**`safety.chatQueue.enabled` 默认是 `true`**，每个 chat 的消息与卡片点击默认串行；`cardActions` 有 `same`（默认）/ `separate` 两种模式；`mergeWhileBusy` 默认关闭。
+
+v0.1 使用默认 `same`，前提是 `message` handler **绝不等待完整 Agent 执行，也绝不等待用户之后点击审批卡片**，卡片 handler 只处理短事务和即时反馈。否则点击会排在正在运行的 message handler 之后，同一 chat 的新消息又排在点击之后，造成死锁。
+
+去重与身份：
+
+- 重复事件被静默丢弃（不触发 handler）。默认 `dedup.ttl` 12 小时，`maxEntries` 5000（`safety/types.ts:23-28`）。
+- 卡片点击的去重键是 `messageId + operator.openId + (tag | name | option | value 前 128 字符)`（`channel.ts:1203`、`cardActionId`）。因此**相同按钮的合法重复点击在 12 小时内会被吞掉**；审批类按钮的 `value` 里必须带 `requestId` 和卡片版本，保证不同请求不会撞键，同时依赖业务层的“首次有效决定”判定，不依赖 SDK 去重。
+- `senderId` 优先取 `open_id`，缺失才回退 `user_id`、`union_id`（`normalize/index.ts:84-87`）；`dmAllowlist` 与它比对，因此 `FEISHU_OWNER_OPEN_ID` 填 `ou_…`，不是 `cli_…`。
+- `cardAction` 返回值可以是 `{ toast: { type: 'success'|'info'|'error'|'warning'|'loading', content } }` 或原地换卡（`types.ts:137-158`）。
 
 如果将来切换为 `separate`，必须显式串行化共享的 chat 绑定状态，不能假设 SDK 保证消息与卡片点击互斥。避免为 v0.1 引入两条复杂处理管线。
 
@@ -191,6 +213,8 @@ Bot → User: KVMux · Relay 审阅 · 已完成 + 简短结果
 
 - **实时路径**：用 `agent.turn_ended` 发完成/失败/取消通知，`agent.permission_requested` 发权限卡，`agent.permission_resolved` 更新过期卡片。
 - **归属**：通知发给事件到达时仍绑定该 Agent 的私聊；切换后的旧 Agent 事件不向新会话冒充结果。
+- **摘要来源**：`agent.turn_ended` 事件自带 `timeline` 快照（`AgentTimelineItem[]`），完成摘要优先从这里取最后的助手文本，不必再 `refetch`；字段形态实现时以 `@getpaseo/protocol` 的类型为准。
+- **hook 不能阻塞**：hook 超过 30 秒会被丢弃且不补发。hook 内只做“入队/落盘幂等记录”并立即返回，飞书发送与有限重试放到 hook 之外异步完成。
 - **恢复路径**：插件重启/重新连接后，对**当前绑定 Agent**读状态、待审批和可用 timeline；可通过 timeline 的 `epoch/seq` 游标补查已记录观察位置之后的已完成 turn。
 - **去重**：按 `agentId + turnId`（有稳定 turnId 时），否则按 timeline epoch/seq 的确定性事件标识；不依赖 `idle` 状态变化判断完成。
 - **发送结果不确定**：飞书发送后但 ACK 丢失时可能产生重复通知；尽力去重但不承诺跨系统 exactly-once。
@@ -202,12 +226,16 @@ Bot → User: KVMux · Relay 审阅 · 已完成 + 简短结果
 
 插件停用/重载时：注销 Feishu listeners → 关闭 WebSocket → 释放 Paseo SDK client 与订阅 → 完成必要的状态刷新。**不调用 Agent stop / archive**，不依赖卸载过程能“完美清理”网络请求。重复启动时不能产生两个同时活跃的飞书长连接。
 
+Paseo 的关闭时序是：IPC `shutdown` → 2 秒后 `SIGTERM` → 再 2 秒后 `SIGKILL`。cleanup（`client.close()`、`channel.disconnect()`、状态落盘）要在约 4 秒内做完，状态写入必须是原子的。
+
+hook 没有持久化队列：daemon 或插件重启期间的事件会丢，超过 30 秒未返回的 hook 会被丢弃，且 `permission_resolved` 不去重。所以通知的幂等键要用业务标识（`agentId + turnId`、`requestId`），不能依赖 hook 只触发一次。
+
 ## 7. 权限请求的具体边界
 
 审批卡单独发送，不混入会话选择卡。默认只展示简短描述，不展示环境变量、完整输出、密钥或无限制长度的脚本内容。
 
 - 在生成按钮之前先检查请求结构是否真的允许映射成 Paseo `allow` / `deny`。
-- 处理点击时以 `operator.openId` 重新鉴权，检查 `requestId` 仍在目标 Agent 的 `pendingPermissions` 中、且当前绑定一致。
+- 处理点击时以 `operator.openId` 重新鉴权，检查 `requestId` 仍在目标 Agent 的 `pendingPermissions` 中、且当前绑定一致。`agents.ref(id)` 得到的 handle 在 `refresh()` 之前 `pendingPermissions` 为 `null`，所以必须先 `refresh()` 再读。
 - 同一 `requestId` 只接受首次有效决定；若桌面端已审批，显示“该请求已处理”。
 - `permission_resolved` 到达后尽量把审批卡标注为已处理；更新失败也不能重新批准。
 - 对不适合二选一的请求类型，只推送“请回 Paseo 处理”提示，不创建虚假的 allow/deny 按钮。
@@ -223,7 +251,7 @@ Bot → User: KVMux · Relay 审阅 · 已完成 + 简短结果
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 企业自建应用凭据；仅在本机安全注入 |
 | `FEISHU_OWNER_OPEN_ID` | 唯一允许操作的用户；默认不允许其他人 |
 | `PASEO_URL` | 本机 daemon WebSocket URL，按安装配置 |
-| `PASEO_PASSWORD`（可选） | daemon 若配置认证则需提供 |
+| `PASEO_PASSWORD`（可选） | daemon 若配置认证则需提供。读取顺序：进程环境变量（继承自 daemon）→ 插件 settings（0600 文件）。不得写入日志 |
 | `STATE_FILE`（可选） | 具权限保护的本地插件状态文件路径 |
 
 - **绝不提交**真实 `.env`、令牌、授权用户私有资料或会话记录。
