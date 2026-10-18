@@ -1,0 +1,187 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { registerNotifications } from "../server/notifications.js";
+import type {
+  NotificationDeps,
+  SessionController,
+} from "../server/contracts.js";
+
+type Handler = (event: never, ctx?: never) => unknown;
+
+function setup() {
+  const handlers = new Map<string, Handler>();
+  const server = {
+    on: vi.fn((name: string, handler: Handler) => {
+      handlers.set(name, handler);
+      return () => {
+        handlers.delete(name);
+      };
+    }),
+  };
+  const notified = new Set<string>();
+  const decided = new Map<string, string>();
+  const session = {
+    currentAgentId: vi.fn((): string | null => "agent-1"),
+    currentChatId: vi.fn((): string | null => "chat-1"),
+    markNotified: vi.fn(async (key: string) => {
+      if (notified.has(key)) return false;
+      notified.add(key);
+      return true;
+    }),
+    markPermissionDecided: vi.fn(async (requestId: string, decision: string) => {
+      if (decided.has(requestId)) return false;
+      decided.set(requestId, decision);
+      return true;
+    }),
+  };
+  const feishu = {
+    sendText: vi.fn(async () => {}),
+    sendCard: vi.fn(async () => "msg-1"),
+    updateCard: vi.fn(async () => {}),
+  };
+  const cards = {
+    picker: vi.fn(() => ({})),
+    current: vi.fn(() => ({})),
+    permission: vi.fn(() => ({ kind: "approval" })),
+    permissionResolved: vi.fn(() => ({ kind: "resolved" })),
+    notice: vi.fn(() => ({ kind: "notice" })),
+  };
+  const deps = {
+    session: (() => session) as unknown as NotificationDeps["session"],
+    feishu,
+    cards: cards as unknown as NotificationDeps["cards"],
+  };
+  registerNotifications(
+    server as unknown as Parameters<typeof registerNotifications>[0],
+    deps,
+  );
+  const emit = async (name: string, event: unknown) => {
+    const h = handlers.get(name);
+    if (!h) throw new Error(`no handler for ${name}`);
+    await h(event as never);
+    // 后台 void task() 留一个 macrotask 让它跑完。
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  return { handlers, session, feishu, cards, emit, deps };
+}
+
+const agent = { id: "agent-1", workspaceId: null, parentAgentId: null, provider: "codex", cwd: "/x", title: "Relay" };
+
+function turnEvent(outcome: { kind: "completed" } | { kind: "failed"; error: { message: string } } | { kind: "canceled"; reason: string }, timeline: { type: string; text?: string }[] = [], turnId: string | null = "turn-1") {
+  return { agent, turnId, outcome, timeline };
+}
+
+const permRequest = {
+  id: "req-1",
+  provider: "codex",
+  name: "exec",
+  kind: "tool",
+  title: "Run",
+  description: "ls",
+  actions: [
+    { id: "a-allow", label: "Allow", behavior: "allow" },
+    { id: "a-deny", label: "Deny", behavior: "deny" },
+  ],
+};
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("registerNotifications", () => {
+  it("turn_ended 按 completed/failed/canceled 映射", async () => {
+    const t = setup();
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "done" }]));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("已完成"));
+
+    await t.emit("agent.turn_ended", turnEvent({ kind: "failed", error: { message: "boom" } }, [], "turn-2"));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("失败"));
+
+    await t.emit("agent.turn_ended", turnEvent({ kind: "canceled", reason: "user" }, [], "turn-3"));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("已取消"));
+  });
+
+  it("非当前绑定被忽略", async () => {
+    const t = setup();
+    t.session.currentAgentId.mockReturnValue("other-agent");
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }));
+    await t.emit(
+      "agent.permission_requested",
+      { agent, request: permRequest },
+    );
+    expect(t.feishu.sendText).not.toHaveBeenCalled();
+    expect(t.feishu.sendCard).not.toHaveBeenCalled();
+  });
+
+  it("session 为 null 被忽略", async () => {
+    const t = setup();
+    (t.deps as { session: unknown }).session = (() => null) as unknown as SessionController;
+    const { session: fastSession, feishu, cards } = t;
+    void fastSession;
+    // deps.session 已被替换，emit 走新的 null session。
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }));
+    await t.emit("agent.archived", { agent, archivedAt: "x" });
+    expect(feishu.sendText).not.toHaveBeenCalled();
+    expect(cards).toBeDefined();
+  });
+
+  it("重复 turn_ended 只发一次", async () => {
+    const t = setup();
+    const e = turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "hi" }]);
+    await t.emit("agent.turn_ended", e);
+    await t.emit("agent.turn_ended", e);
+    expect(t.feishu.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("permission_resolved 重复到达只处理一次", async () => {
+    const t = setup();
+    await t.emit("agent.permission_requested", { agent, request: permRequest });
+    expect(t.cards.permission).toHaveBeenCalledTimes(1);
+    await t.emit("agent.permission_resolved", { agent, requestId: "req-1", resolution: { behavior: "allow" } });
+    await t.emit("agent.permission_resolved", { agent, requestId: "req-1", resolution: { behavior: "allow" } });
+    expect(t.feishu.updateCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("不可映射的权限请求发 notice 而非审批卡", async () => {
+    const t = setup();
+    await t.emit("agent.permission_requested", {
+      agent,
+      request: { ...permRequest, id: "req-2", kind: "question", actions: undefined },
+    });
+    expect(t.cards.permission).not.toHaveBeenCalled();
+    expect(t.cards.notice).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringContaining("需要审批") }));
+  });
+
+  it("hook 在 feishu 挂起时仍立刻返回", async () => {
+    const t = setup();
+    t.feishu.sendText.mockImplementation(() => new Promise(() => {}));
+    const h = t.handlers.get("agent.turn_ended")!;
+    const started = Date.now();
+    await h(turnEvent({ kind: "completed" }, []) as never);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("无助手文本时只发状态", async () => {
+    const t = setup();
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, [{ type: "reasoning", text: "hmm" }]));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", "Relay · 已完成");
+  });
+
+  it("archived 发 notice 且不调 session 的清除", async () => {
+    const t = setup();
+    await t.emit("agent.archived", { agent, archivedAt: "2026-01-01" });
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("已归档"));
+  });
+
+  it("逆序取最后一段助手文本", async () => {
+    const t = setup();
+    await t.emit(
+      "agent.turn_ended",
+      turnEvent({ kind: "completed" }, [
+        { type: "assistant_message", text: "first" },
+        { type: "assistant_message", text: "last" },
+      ]),
+    );
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("last"));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.not.stringContaining("first"));
+  });
+});
