@@ -21,3 +21,7 @@
 - 为什么不替你开：DESIGN §8 要求"不要自动开启 Paseo 全局 pluginsEnabled；安装者须明确许可"，且它是对你整台 daemon 的全局改动。
 - 影响：不开则无法做真实的 plugin loading / hook 实机验证；其余（类型检查、fake-port 单测、打包加载、client loopback）不受影响。
 - 你醒来后若同意：`paseo plugin add /home/dengqi/Source/langs/javascript/paseo-feishu` 之前先在设置里开 Enable plugins。
+
+## 记录：`gl/oc-muse-spark-1.3-contributor` 不可用
+- 两次启动都以 `400 MissingSessionID (x-opencode-session)` 失败，属提供商路由问题，重试无效。
+- 处理：Writer B 改用 `gl/cc-muse-spark-1.3-contributor`（与 Writer A 同提供商，两者在不同 worktree）。
