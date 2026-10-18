@@ -186,8 +186,8 @@ export type CardAction =
   | { action: "open_picker"; pickerRevision: number }
   | { action: "refresh_agents"; pickerRevision: number }
   | { action: "page_agents"; page: number; pickerRevision: number }
-  | { action: "approve_permission"; agentId: string; requestId: string }
-  | { action: "deny_permission"; agentId: string; requestId: string };
+  | { action: "approve_permission"; agentId: string; requestId: string; cardRevision?: number }
+  | { action: "deny_permission"; agentId: string; requestId: string; cardRevision?: number };
 
 export interface IncomingText {
   messageId: string;
@@ -208,9 +208,8 @@ export interface IncomingCardAction {
 
 /** 卡片点击的同步响应：必须在 3 秒内由 channel.ts 返回，耗时工作放后台。 */
 export type ToastType = "success" | "info" | "error" | "warning" | "loading";
-export interface CardResponse {
-  toast: { type: ToastType; content: string };
-}
+// type 而非 interface：SDK 的 CardActionResponse 是 Record<string, unknown>，interface 没有索引签名，赋不过去。
+export type CardResponse = { toast: { type: ToastType; content: string } };
 
 // ───────── session 层对外接口（channel.ts / index.server.ts 调用）─────────
 
