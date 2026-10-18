@@ -34,6 +34,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
 
   let state: PersistedState = await storeDep.load();
   let switching = false;
+  // 审批在途集合：同一 requestId 的第二次点击（含相反按钮）在首个结果落定前一律拒绝。
+  const inFlightPermissions = new Set<string>();
   let closed = false;
 
   // 写盘串行化：所有 save 经同一条 promise 链，避免并发交错。
@@ -156,30 +158,44 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (closed) return;
     // 身份/渠道校验：不通过则静默忽略，不泄露任何会话信息。
     if (msg.senderId !== ownerOpenId || msg.chatType !== "p2p") return;
+    // 去重放在入口：未绑定/切换中/命令这些不转发的消息也要记一笔，
+    // 否则重投后已绑定，它们会被当成普通提示词转给 Agent（A01/A10）。
+    if (state.deliveries[msg.messageId]) return;
+    const consume = async (): Promise<void> => {
+      state.deliveries[msg.messageId] = { state: "rejected", at: now() };
+      try {
+        await enqueueSave();
+      } catch (err) {
+        logErr("save consumed", err);
+      }
+    };
     if (msg.rawContentType !== "text") {
+      await consume();
       await safeSendText(msg.chatId, "仅支持文本消息，其他类型暂不支持。");
       return;
     }
     const cmd = msg.text.trim();
     if (cmd === "/sessions") {
+      await consume();
       await sendPicker(msg.chatId);
       return;
     }
     if (cmd === "/status") {
+      await consume();
       await sendStatus(msg.chatId);
       return;
     }
     if (switching) {
+      await consume();
       await safeSendText(msg.chatId, "切换中：此消息未发送，请切换后重发。");
       return;
     }
     const agentId = state.binding?.agentId;
     if (!agentId) {
+      await consume();
       await sendPicker(msg.chatId);
       return;
     }
-    // 去重：已见过的 messageId 静默忽略。
-    if (state.deliveries[msg.messageId]) return;
     // 同一原子快照的目标：此后不再重新读取绑定。
     const targetAgentId = agentId;
     const targetChatId = msg.chatId;
@@ -343,14 +359,21 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (!binding?.agentId || agentId !== binding.agentId) {
       return toast("info", "该请求已处理");
     }
-    if (state.decidedPermissions[requestId]) {
-      return toast("info", "该请求已处理");
+    if (state.decidedPermissions[requestId] || inFlightPermissions.has(requestId)) {
+      return toast("info", "该请求已处理或正在处理");
     }
     if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
+    // 第一个 await 之前同步占位：「允许」「拒绝」两个按钮的 value 不同，SDK 去重挡不住，
+    // 快速连点会向 daemon 并发提交两个冲突的决定。后台任务结束（成功或失败）才释放。
+    inFlightPermissions.add(requestId);
+    const release = (): void => {
+      inFlightPermissions.delete(requestId);
+    };
     let pendings;
     try {
       pendings = await paseo.getPendingPermissions(binding.agentId);
     } catch (err) {
+      release();
       logErr("getPendingPermissions", err);
       return toast("error", "查询审批状态失败，请稍后重试");
     }
@@ -361,6 +384,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         await enqueueSave();
       } catch (err) {
         logErr("save resolved_elsewhere", err);
+      } finally {
+        release();
       }
       return toast("info", "该请求已处理");
     }
@@ -368,39 +393,43 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     const targetChat = binding.chatId;
     runBackground(
       (async () => {
-        let res: { ok: true } | { ok: false; reason: string };
         try {
-          res = await paseo.respondToPermission(targetAgent, requestId, approve ? "allow" : "deny");
-        } catch (err) {
-          logErr("respondToPermission", err);
-          await safeSendText(targetChat, "审批提交时发生错误，未重复提交，请到 Paseo 核对。");
-          return;
-        }
-        if (!res.ok) {
-          await safeSendText(targetChat, `审批未成功（${res.reason}），未重复提交，请到 Paseo 核对。`);
-          return;
-        }
-        state.decidedPermissions[requestId] = { decision, at: now() };
-        try {
-          await enqueueSave();
-        } catch (err) {
-          logErr("save permission decision", err);
-        }
-        let title = "当前会话";
-        try {
-          const a = await paseo.refreshAgent(targetAgent);
-          if (a?.title) title = a.title;
-        } catch (err) {
-          logErr(`refresh ${short(targetAgent)}`, err);
-        }
-        try {
-          await feishu.updateCard(
-            evt.messageId,
-            cards.permissionResolved({ agentTitle: title, outcome: decision }),
-          );
-        } catch (err) {
-          logErr(`updateCard ${short(evt.messageId)}`, err);
-          await safeSendText(targetChat, `审批已提交（${decision}），但卡片更新失败。`);
+          let res: { ok: true } | { ok: false; reason: string };
+          try {
+            res = await paseo.respondToPermission(targetAgent, requestId, decision);
+          } catch (err) {
+            logErr("respondToPermission", err);
+            await safeSendText(targetChat, "审批提交时发生错误，未重复提交，请到 Paseo 核对。");
+            return;
+          }
+          if (!res.ok) {
+            await safeSendText(targetChat, `审批未成功（${res.reason}），未重复提交，请到 Paseo 核对。`);
+            return;
+          }
+          state.decidedPermissions[requestId] = { decision, at: now() };
+          try {
+            await enqueueSave();
+          } catch (err) {
+            logErr("save permission decision", err);
+          }
+          let title = "当前会话";
+          try {
+            const a = await paseo.refreshAgent(targetAgent);
+            if (a?.title) title = a.title;
+          } catch (err) {
+            logErr(`refresh ${short(targetAgent)}`, err);
+          }
+          try {
+            await feishu.updateCard(
+              evt.messageId,
+              cards.permissionResolved({ agentTitle: title, outcome: decision }),
+            );
+          } catch (err) {
+            logErr(`updateCard ${short(evt.messageId)}`, err);
+            await safeSendText(targetChat, `审批已提交（${decision}），但卡片更新失败。`);
+          }
+        } finally {
+          release();
         }
       })(),
       "permission_decision",

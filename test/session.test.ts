@@ -42,6 +42,8 @@ class FakePaseo implements PaseoPort {
   refreshCalls: string[] = [];
   refreshBehavior: ((id: string) => Promise<AgentSummary | null>) | null = null;
   listCalls = 0;
+  /** 设置后 respondToPermission 会挂起到它 resolve，用来制造「在途」窗口。 */
+  respondGate: Promise<void> | null = null;
   pendings = new Map<string, PendingPermission[]>();
   responds: Array<{ agentId: string; requestId: string; decision: PermissionDecision }> = [];
   respondResult: { ok: true } | { ok: false; reason: "not_pending" | "not_connected" | "failed" } = {
@@ -74,6 +76,7 @@ class FakePaseo implements PaseoPort {
     decision: PermissionDecision,
   ): Promise<{ ok: true } | { ok: false; reason: "not_pending" | "not_connected" | "failed" }> {
     this.responds.push({ agentId, requestId, decision });
+    if (this.respondGate) await this.respondGate;
     return this.respondResult;
   }
   async close(): Promise<void> {}
@@ -261,6 +264,26 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     expect(res.toast.type).toBe("error");
     expect(fx.paseo.refreshCalls).toHaveLength(0);
     expect(fx.feishu.updates).toHaveLength(0);
+  });
+
+  it("redelivered messages that were consumed while unbound/switching/command never reach the agent after binding", async () => {
+    const fx = await setup([agent({ id: "a1" })]);
+    // 未绑定时的首条消息、命令，都不转发。
+    await fx.session.handleText(text({ messageId: "m-first", text: "不该发出去" }));
+    await fx.session.handleText(text({ messageId: "m-cmd", text: "/status" }));
+    const picker = await currentPicker(fx);
+    await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
+    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+
+    // 飞书重投同一批 messageId。
+    await fx.session.handleText(text({ messageId: "m-first", text: "不该发出去" }));
+    await fx.session.handleText(text({ messageId: "m-cmd", text: "/status" }));
+    expect(fx.paseo.sends).toHaveLength(0);
+
+    // 重启后同样不穿透。
+    const again = await reopen(fx);
+    await again.handleText(text({ messageId: "m-first", text: "不该发出去" }));
+    expect(fx.paseo.sends).toHaveLength(0);
   });
 
   it("A13: duplicate messageId never re-sends", async () => {
@@ -547,6 +570,40 @@ describe("session: permissions (A07)", () => {
     expect(fx.paseo.responds).toHaveLength(1);
     const st = await createFileStore(fx.storePath).load();
     expect(st.decidedPermissions["req-1"]?.decision).toBe("allow");
+  });
+
+  it("in-flight approve blocks an opposite deny click: daemon sees exactly one decision", async () => {
+    const fx = await boundWithPending();
+    let open!: () => void;
+    fx.paseo.respondGate = new Promise<void>((r) => void (open = r));
+    const first = await fx.session.handleCardAction(approveEvt(fx));
+    expect(first.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.paseo.responds).toHaveLength(1));
+
+    const deny: IncomingCardAction = {
+      ...approveEvt(fx),
+      action: { action: "deny_permission", agentId: "a1", requestId: "req-1" },
+    };
+    const second = await fx.session.handleCardAction(deny);
+    expect(second.toast.content).toContain("处理");
+    expect(fx.paseo.responds).toHaveLength(1);
+
+    open();
+    await vi.waitFor(() => expect(fx.feishu.updates.length).toBeGreaterThan(0));
+    expect(fx.paseo.responds).toEqual([{ agentId: "a1", requestId: "req-1", decision: "allow" }]);
+  });
+
+  it("a failed respond releases the slot so the user can retry", async () => {
+    const fx = await boundWithPending();
+    fx.paseo.respondResult = { ok: false, reason: "failed" };
+    await fx.session.handleCardAction(approveEvt(fx));
+    await vi.waitFor(() => expect(fx.paseo.responds).toHaveLength(1));
+    await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("审批未成功"));
+
+    fx.paseo.respondResult = { ok: true };
+    const retry = await fx.session.handleCardAction(approveEvt(fx));
+    expect(retry.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.paseo.responds).toHaveLength(2));
   });
 
   it("A07: desktop pre-resolved request cannot be re-approved", async () => {

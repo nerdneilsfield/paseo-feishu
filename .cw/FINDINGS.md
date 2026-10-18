@@ -65,3 +65,8 @@
 ## 实机验证（本机 daemon 0.11.4，无密码）
 - `createPaseoPort`（真实 `@getpaseo/client`）：connect → isReady=true；listAgents 返回 5 个；refreshAgent 正常；不存在的 id 返回 null；getPendingPermissions=0；close 连续两次 1ms，isReady=false。
 - 未验证：send（会向真实 agent 发消息，不在冒烟测试里做）、respondToPermission、带密码路径、插件加载（D3）、全部飞书侧。
+
+## Gemini 审阅（/tmp/review-gemini.md）→ 已修
+- P1 审批并发：同一 requestId 的「允许」「拒绝」按钮 value 不同，SDK 去重挡不住，且 decidedPermissions 在 respond 成功后才写，快速连点会向 daemon 并发提交两个决定。修：session 内 `inFlightPermissions` 同步占位，后台任务结束才释放；失败也释放以便重试。测试：fake 加 respondGate，修复前红、修复后绿。
+- P1 消息去重滞后：未绑定/切换中/命令/非文本分支没写 deliveries，重投后已绑定会被当作提示词转发（违反 A01/A10）。修：去重前置到入口，这些分支先标 rejected 再处理。测试同样先红后绿。
+- 其余 7 项 Gemini 判通过（授权、hook 不阻塞、2.5s loading、同步 cleanup、store 损坏保护、日志、无 internal/生命周期调用）；我只抽查了与上面两条相关的代码，其余沿用其结论，交给 grok 全面审阅复核。
