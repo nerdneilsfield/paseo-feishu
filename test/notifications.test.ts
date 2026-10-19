@@ -178,10 +178,28 @@ describe("registerNotifications", () => {
       "agent.turn_ended",
       turnEvent({ kind: "completed" }, [
         { type: "assistant_message", text: "first" },
+        { type: "tool_call" },
         { type: "assistant_message", text: "last" },
       ]),
     );
     expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("last"));
     expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.not.stringContaining("first"));
+  });
+
+  it("连续的助手分片拼成完整答复，工具输出不并入", async () => {
+    const t = setup();
+    await t.emit(
+      "agent.turn_ended",
+      turnEvent({ kind: "completed" }, [
+        { type: "assistant_message", text: "前半" },
+        { type: "tool_call", text: "secret command output" },
+        { type: "assistant_message", text: "后半" },
+        { type: "assistant_message", text: "结尾" },
+      ]),
+    );
+    const body = t.feishu.sendText.mock.calls.at(-1)?.[1] as string;
+    expect(body).toContain("后半结尾");
+    expect(body).not.toContain("前半");
+    expect(body).not.toContain("secret command output");
   });
 });

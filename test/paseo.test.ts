@@ -262,8 +262,11 @@ describe("createPaseoPort", () => {
     const { client } = setupClient();
     const port = createPaseoPort({ paseoUrl: "ws://x" });
     const h = refHandle(client, "a1");
+    // 前两次 refresh 是提交前核对；第三次是提交后的确认，请求已离开 pending。
+    let refreshes = 0;
     h.refresh.mockImplementation(async () => {
-      h.pendingPermissions = [fakePermissionRequest()];
+      refreshes += 1;
+      h.pendingPermissions = refreshes < 3 ? [fakePermissionRequest()] : [];
       return { agent: fakeSnapshot(), project: null };
     });
     expect(await port.respondToPermission("a1", "nope", "allow")).toEqual({
@@ -277,6 +280,24 @@ describe("createPaseoPort", () => {
       requestId: "req-1",
       response: { behavior: "deny", selectedActionId: "a-deny" },
     });
+  });
+
+  it("respond 返回后请求仍在 pending 则记为 failed，不能当成已批准", async () => {
+    const { client } = setupClient();
+    const port = createPaseoPort({ paseoUrl: "ws://x" });
+    const h = refHandle(client, "a1");
+    const req = fakePermissionRequest();
+    // SDK 的 respondToPermission 只把消息写进 socket 就返回；daemon 拒绝时不会抛。
+    // 权威结果是随后 refresh 到的 pendingPermissions。
+    h.refresh.mockImplementation(async () => {
+      h.pendingPermissions = [req];
+      return { agent: fakeSnapshot(), project: null };
+    });
+    expect(await port.respondToPermission("a1", "req-1", "allow")).toEqual({
+      ok: false,
+      reason: "failed",
+    });
+    expect(h.refresh.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("close 幂等且 hang 住也能返回", async () => {

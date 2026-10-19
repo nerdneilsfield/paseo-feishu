@@ -33,11 +33,27 @@ function button(
   value: Record<string, unknown>,
   type = "default",
 ): Record<string, unknown> {
-  return { tag: "button", text: { tag: "plain_text", content }, type, value };
+  // Card JSON 2.0 回传按钮值的位置是 behaviors，不是 1.0 的顶层 value。
+  // 顶层 value 不会出现在 card.action.trigger 里，按钮点了等于没带动作。
+  return {
+    tag: "button",
+    text: { tag: "plain_text", content },
+    type,
+    behaviors: [{ type: "callback", value }],
+  };
 }
 
 function actionRow(buttons: Array<Record<string, unknown>>): Record<string, unknown> {
-  return { tag: "action", layout: "flow", actions: buttons };
+  // 2.0 没有 action 容器；按钮放进 column_set，一行一个按钮。
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    columns: buttons.map((btn) => ({
+      tag: "column",
+      width: "auto",
+      elements: [btn],
+    })),
+  };
 }
 
 function displayTitle(a: Pick<AgentSummary, "id" | "title">): string {

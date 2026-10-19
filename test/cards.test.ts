@@ -20,9 +20,21 @@ function collectButtons(card: Record<string, unknown>): Array<Record<string, unk
   const body = card["body"] as { elements: Array<Record<string, unknown>> };
   const out: Array<Record<string, unknown>> = [];
   for (const el of body.elements) {
-    if (el["tag"] === "action") out.push(...(el["actions"] as Array<Record<string, unknown>>));
+    if (el["tag"] !== "column_set") continue;
+    for (const col of el["columns"] as Array<Record<string, unknown>>) {
+      for (const inner of col["elements"] as Array<Record<string, unknown>>) {
+        if (inner["tag"] === "button") out.push(inner);
+      }
+    }
   }
   return out;
+}
+
+/** 飞书 2.0 回调值在 behaviors 里；按钮顶层 value 不会回到 card.action.trigger。 */
+function callbackValue(button: Record<string, unknown>): unknown {
+  const behaviors = button["behaviors"] as Array<Record<string, unknown>>;
+  const callback = behaviors.find((b) => b["type"] === "callback");
+  return callback?.["value"];
 }
 
 function collectMarkdown(card: Record<string, unknown>): string {
@@ -106,7 +118,7 @@ describe("picker 排序与分页", () => {
       connected: true,
     });
     const selects0 = collectButtons(p0).filter(
-      (b) => (b["value"] as { action: string }).action === "select_agent",
+      (b) => (callbackValue(b) as { action: string }).action === "select_agent",
     );
     expect(selects0).toHaveLength(5);
     const labels0 = collectButtons(p0).map((b) => (b["text"] as { content: string }).content);
@@ -121,7 +133,7 @@ describe("picker 排序与分页", () => {
       connected: true,
     });
     const selects1 = collectButtons(p1).filter(
-      (b) => (b["value"] as { action: string }).action === "select_agent",
+      (b) => (callbackValue(b) as { action: string }).action === "select_agent",
     );
     expect(selects1).toHaveLength(2);
     const labels1 = collectButtons(p1).map((b) => (b["text"] as { content: string }).content);
@@ -160,14 +172,30 @@ describe("picker 排序与分页", () => {
       connected: true,
     });
     const selects = collectButtons(card).filter(
-      (b) => (b["value"] as { action: string }).action === "select_agent",
+      (b) => (callbackValue(b) as { action: string }).action === "select_agent",
     );
     expect(selects).toHaveLength(1);
-    expect(selects[0]?.["value"]).toMatchObject({
+    expect(callbackValue(selects[0]!)).toMatchObject({
       action: "select_agent",
       agentId: "ax",
       pickerRevision: 7,
     });
+  });
+
+  test("2.0 按钮用 behaviors callback，没有 1.0 的 action 容器", () => {
+    const card = builders.picker({
+      agents: [agent({ id: "ax" })],
+      page: 0,
+      pickerRevision: 1,
+      currentAgentId: null,
+      connected: true,
+    });
+    const body = card["body"] as { elements: Array<Record<string, unknown>> };
+    expect(body.elements.some((el) => el["tag"] === "action")).toBe(false);
+    const btn = collectButtons(card)[0]!;
+    expect(btn["tag"]).toBe("button");
+    expect(btn["value"]).toBeUndefined();
+    expect(callbackValue(btn)).toMatchObject({ action: "select_agent", agentId: "ax" });
   });
 });
 
@@ -187,15 +215,15 @@ describe("审批卡", () => {
   test("requestId 落在 value 序列化后前 128 字符内", () => {
     const card = builders.permission(permInput);
     const approve = collectButtons(card).find(
-      (b) => (b["value"] as { action: string }).action === "approve_permission",
+      (b) => (callbackValue(b) as { action: string }).action === "approve_permission",
     );
     const deny = collectButtons(card).find(
-      (b) => (b["value"] as { action: string }).action === "deny_permission",
+      (b) => (callbackValue(b) as { action: string }).action === "deny_permission",
     );
     expect(approve).toBeDefined();
     expect(deny).toBeDefined();
     for (const btn of [approve, deny]) {
-      const serialized = JSON.stringify(btn?.["value"]);
+      const serialized = JSON.stringify(callbackValue(btn!));
       expect(serialized.slice(0, 128)).toContain(permInput.permission.requestId);
     }
   });
@@ -204,14 +232,18 @@ describe("审批卡", () => {
     const c1 = builders.permission(permInput);
     const c2 = builders.permission(permInput);
     const v1 = JSON.stringify(
-      collectButtons(c1).find(
-        (b) => (b["value"] as { action: string }).action === "approve_permission",
-      )?.["value"],
+      callbackValue(
+        collectButtons(c1).find(
+          (b) => (callbackValue(b) as { action: string }).action === "approve_permission",
+        )!,
+      ),
     );
     const v2 = JSON.stringify(
-      collectButtons(c2).find(
-        (b) => (b["value"] as { action: string }).action === "approve_permission",
-      )?.["value"],
+      callbackValue(
+        collectButtons(c2).find(
+          (b) => (callbackValue(b) as { action: string }).action === "approve_permission",
+        )!,
+      ),
     );
     expect(v1).not.toBe(v2);
   });

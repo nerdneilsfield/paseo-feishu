@@ -449,6 +449,26 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     expect(fx.feishu.texts.at(-1)?.text).toContain("卡片更新失败");
   });
 
+  it("refresh_agents on the current-session card reports the live status, not the picker", async () => {
+    const fx = await setup([agent({ id: "a1", status: "idle", title: "Relay" })]);
+    const picker = await currentPicker(fx);
+    await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
+    // 当前会话卡在落盘之后才更新；等它，读到的才是卡片按钮里的 revision。
+    await vi.waitFor(() => expect(fx.feishu.updates).toHaveLength(1));
+    const st = await createFileStore(fx.storePath).load();
+    fx.paseo.agents.set("a1", agent({ id: "a1", status: "running", title: "Relay" }));
+    const res = await fx.session.handleCardAction({
+      messageId: st.binding?.pickerMessageId ?? "",
+      chatId: CHAT,
+      operatorOpenId: OWNER,
+      action: { action: "refresh_agents", pickerRevision: st.binding?.pickerRevision ?? 0 },
+    });
+    expect(res.toast.type).toBe("success");
+    const card = fx.feishu.updates.at(-1)?.card as { kind: string; agent: AgentSummary };
+    expect(card.kind).toBe("current");
+    expect(card.agent.status).toBe("running");
+  });
+
   it("open_picker / refresh_agents re-list fresh and update the card; offline card when disconnected", async () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
