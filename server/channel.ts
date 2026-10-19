@@ -77,12 +77,13 @@ function logError(scope: string, err: unknown): void {
 }
 
 export function createFeishuChannel(
-  config: Pick<PluginConfig, "feishuAppId" | "feishuAppSecret" | "ownerOpenId">,
+  config: Pick<PluginConfig, "feishuAppId" | "feishuAppSecret" | "feishuDomain" | "ownerOpenId">,
 ): FeishuChannel {
   const { ownerOpenId } = config;
   const channel = createLarkChannel({
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
+    ...(config.feishuDomain ? { domain: config.feishuDomain } : {}),
     transport: "websocket",
     policy: { dmMode: "allowlist", dmAllowlist: [ownerOpenId] },
     // 显式声明队列行为：不依赖 SDK 默认值。

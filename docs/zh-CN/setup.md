@@ -1,4 +1,8 @@
+[English](../en/setup.md) | **简体中文**
+
 # 设置与使用
+
+飞书（Feishu）和 Lark 是同一个产品在国内和海外的两个名字，步骤相同；只有开发者后台地址和一个插件设置不同，文中会指出。
 
 本文带你完成三件事：创建并配置飞书应用，把插件装进本机 Paseo daemon，在飞书里完成第一次对话。配置项的完整说明见 [reference.md](./reference.md)。
 
@@ -17,7 +21,9 @@
 
 以下界面名称取自飞书开放平台的官方文档。控制台改版后位置可能不同。
 
-1. 登录[飞书开发者后台](https://open.feishu.cn/app)，创建**企业自建应用**。
+1. 登录开发者后台，创建**企业自建应用**：
+   - 飞书（国内）：<https://open.feishu.cn/app>
+   - Lark（国际版）：<https://open.larksuite.com/app>
 2. 在 **基础信息 > 凭证与基础信息** 页面，记下 **App ID** 和 **App Secret**。App Secret 等同密码，不要提交到仓库或贴进聊天。
 3. 在 **应用能力 > 添加应用能力** 页面，添加**机器人**能力。
 
@@ -30,7 +36,7 @@
 | `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 |
 | `im:message:send_as_bot` | 以应用身份发送消息 |
 
-插件还会更新已发出的卡片（选择会话后把卡片改成“当前会话”，审批后把按钮改成结果）。更新卡片所需的权限标识我没能在官方文档里核实。如果卡片更新失败，到权限管理页搜索“消息”相关权限，开通与“更新应用发送的消息卡片”对应的一项；插件日志里也会记录失败的类别。
+插件还会更新已发出的卡片，例如选择会话后把选择卡改成“当前会话”卡。更新卡片的接口接受 `im:message`、`im:message:send_as_bot`、`im:message:update` 中的任意一个，所以 `im:message:send_as_bot` 已经够用。飞书限制卡片只能在消息发出后 14 天内更新，同一条消息每秒最多更新 5 次。
 
 插件只处理私聊，所以不需要群聊权限。
 
@@ -57,7 +63,11 @@ export FEISHU_OWNER_OPEN_ID=<你的 open_id>
 
 占位符 `<…>` 替换为你在前面步骤取得的值。daemon 如果已在运行，设置后重启它。如果 daemon 是由 systemd、launchd 或桌面应用拉起的，需要把变量写到对应的服务配置里，而不是只在当前终端里 `export`。
 
-如果 daemon 设置了密码，同时设置 `PASEO_PASSWORD`。如果 daemon 不在默认地址 `ws://127.0.0.1:6767/ws` 上，设置 `PASEO_URL`。
+按需再设置这些变量：
+
+- 国际版 Lark：`FEISHU_DOMAIN=lark`。不设置时，插件连接国内飞书。
+- daemon 设了密码：`PASEO_PASSWORD=<密码>`。
+- daemon 不在默认地址 `ws://127.0.0.1:6767/ws`：`PASEO_URL=<地址>`。
 
 接着开启插件功能并安装：
 
@@ -65,8 +75,10 @@ export FEISHU_OWNER_OPEN_ID=<你的 open_id>
 2. 运行安装命令，路径换成本仓库的绝对路径：
 
    ```bash
-   paseo plugin add <插件目录>
+   paseo plugin add github:nerdneilsfield/paseo-feishu
    ```
+
+   想从本地目录安装，把 `github:` 那一段换成目录的绝对路径。
 
 3. 确认插件在运行：
 
@@ -127,10 +139,10 @@ export FEISHU_OWNER_OPEN_ID=<你的 open_id>
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
 | `paseo plugin ls` 里没有 `paseo-feishu`，或状态是 `disabled` | **Enable plugins** 没打开 | 在 **Settings > Plugins** 打开总开关；改了配置文件则运行 `paseo reload` |
-| 安装时报 `__dirname is not defined` | 使用了没有包含 `server/shim.ts` 的旧版本 | 更新本仓库到最新版本后重新安装 |
+| 安装时报 `__dirname is not defined` | 使用了没有包含 `server/shim.ts` 的旧版本 | 更新插件到最新版本后重新安装 |
 | 安装时报 `requires Paseo <0.8.0` | `paseo-plugin.json` 缺少 `requirements.paseo` | 恢复该字段，值为 `>=0.8.0` |
 | 日志出现 `missing required env: …` | 变量没有传进 daemon 进程 | 把变量写进 daemon 的启动环境后重启 daemon，不要只在当前终端 `export` |
-| 日志出现 `could not resolve bot identity` | App ID 或 App Secret 错误，或应用尚未启用机器人能力 | 核对两个值和机器人能力；注意 App ID 以 `cli_` 开头 |
+| 日志出现 `could not resolve bot identity` | App ID 或 App Secret 错误，机器人能力未启用，或 `FEISHU_DOMAIN` 与账号不符 | 核对两个值和机器人能力；Lark 账号设置 `FEISHU_DOMAIN=lark` |
 | 状态是 `running`，但发消息没有任何反应 | 应用没有发布新版本；没订阅 `im.message.receive_v1`；订阅方式不是长连接；发消息的人不是 `FEISHU_OWNER_OPEN_ID` | 逐项核对第 5、6 步；确认 open_id 取自本应用 |
 | 能收到卡片，点按钮没反应或报错 | 没添加 `card.action.trigger` 回调，或回调订阅方式不是长连接 | 核对第 5 步的第 3、4 点 |
 | 机器人回复“Paseo 未连接，消息未发送” | 插件连不上 daemon：地址错误、密码错误，或 daemon 刚重启 | 核对 `PASEO_URL` 和 `PASEO_PASSWORD`；查看日志里的连接错误 |
@@ -154,3 +166,14 @@ paseo plugin remove paseo-feishu
 ```
 
 插件停止时会断开飞书长连接和 Paseo 连接，不会影响任何 agent。状态文件不会被自动删除。需要彻底清理时，手动删除状态文件，默认路径为 `~/.paseo/plugins-data/paseo-feishu/state.json`。
+
+## 延伸阅读
+
+以下页面来自本项目之外，内容可能随时变化。
+
+- 飞书：[应用配置说明](https://open.feishu.cn/document/develop-a-card-interactive-bot/faqs?lang=zh-CN)，机器人、权限、事件和回调配置的官方步骤。
+- 飞书：[如何获取 Open ID](https://open.feishu.cn/document/faq/trouble-shooting/how-to-obtain-openid)。
+- 飞书：[更新应用发送的消息卡片](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch)，含权限列表和更新限制。
+- 飞书：[卡片回传交互](https://open.feishu.cn/document/feishu-cards/card-callback-communication)，含 3 秒响应限制。
+- OpenClaw：[Feishu setup](https://docs.openclaw.ai/channels/feishu/setup)，另一个 agent 网关的飞书/Lark 接入流程，其中有飞书与 Lark 的选择。
+- AstrBot：[接入飞书](https://docs.astrbot.app/platform/lark.html)，带截图的中文教程，并说明国内版和国际版都支持长连接。

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160" role="img" aria-labelledby="t">
+  <title id="t">paseo-feishu 标志</title>
+  <rect width="640" height="160" rx="24" fill="#0f172a"/>
+  <g transform="translate(28 28)">
+    <rect width="104" height="104" rx="24" fill="#1e293b" stroke="#38bdf8" stroke-width="3"/>
+    <path d="M24 38 L44 52 L24 66" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M52 68 H78" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round"/>
+    <path d="M66 20 h22 a10 10 0 0 1 10 10 v14 a10 10 0 0 1 -10 10 h-8 l-8 9 v-9 h-6 a10 10 0 0 1 -10 -10 v-14 a10 10 0 0 1 10 -10 z" fill="#f8fafc" transform="translate(-2 -6) scale(0.85)"/>
+  </g>
+  <text x="156" y="82" font-family="Inter, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="44" font-weight="700" fill="#f8fafc">paseo-feishu</text>
+  <text x="158" y="118" font-family="Inter, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="20" fill="#94a3b8">在飞书（Feishu/Lark）里继续 Paseo agent</text>
+</svg>

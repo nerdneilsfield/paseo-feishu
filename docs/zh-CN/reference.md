@@ -1,4 +1,8 @@
+[English](../en/reference.md) | **简体中文**
+
 # 参考
+
+飞书（Feishu）和 Lark 是同一个产品的两个名字，本文统称“飞书”；环境变量等代码里出现的名字沿用 `feishu`。
 
 本文列出 paseo-feishu 的配置、聊天命令、通知规则、状态文件和已知限制。安装与首次使用见 [setup.md](./setup.md)。
 
@@ -11,6 +15,7 @@
 | `FEISHU_APP_ID` | 是 | 无 | 飞书应用的 App ID，以 `cli_` 开头 |
 | `FEISHU_APP_SECRET` | 是 | 无 | 飞书应用的 App Secret |
 | `FEISHU_OWNER_OPEN_ID` | 是 | 无 | 唯一被授权的飞书用户的 open_id，以 `ou_` 开头 |
+| `FEISHU_DOMAIN` | 否 | `feishu` | `feishu` 或留空：国内飞书（`https://open.feishu.cn`）；`lark`：国际版 Lark（`https://open.larksuite.com`）；其他值按完整 URL 使用（私有部署）。`feishu`、`lark` 不区分大小写 |
 | `PASEO_URL` | 否 | `ws://127.0.0.1:6767/ws` | daemon 的 WebSocket 地址 |
 | `PASEO_PASSWORD` | 否 | 无 | daemon 的明文密码。daemon 未设置密码时不需要 |
 | `STATE_FILE` | 否 | `$PASEO_HOME/plugins-data/paseo-feishu/state.json` | 状态文件路径 |
@@ -71,7 +76,11 @@
 
 **旧卡片会失效。** 每次发出新的会话选择卡，版本号加一，并记下这张卡的消息 ID。点击的卡片消息 ID 或版本号与记录不一致时，提示“卡片已过期，请重新打开”。发送 `/sessions` 获取新卡片。
 
-**飞书对卡片回调的限制。** 飞书要求在 3 秒内响应卡片点击。插件在 2.5 秒内必定返回一个提示（loading、info、warning 或 error 类 toast）。切换、刷新和审批的实际工作在后台继续，完成后更新卡片或发送文字回复。
+**卡片格式。** 卡片使用 JSON 2.0 结构，需要飞书客户端 7.20 或更高版本；更低版本只显示标题和升级提示。
+
+**更新限制。** 飞书只允许在消息发出后 14 天内更新卡片，同一条消息每秒最多更新 5 次。
+
+**飞书对卡片回调的限制。** 飞书要求在 3 秒内响应卡片点击。处理超过 2.5 秒仍没有结果时，插件返回 loading 提示，保证响应落在限制之内；其他提示类型有 info、warning、error。切换、刷新和审批的实际工作在后台继续，完成后更新卡片或发送文字回复。
 
 ## 通知
 
@@ -130,7 +139,7 @@
 | --- | --- |
 | `Plugin ready` | 插件已加载。不代表飞书或 Paseo 已连接 |
 | `missing required env: …` | 列出的必需变量缺失，插件空载 |
-| `could not resolve bot identity …` | 飞书拒绝了 App ID 或 App Secret，或应用未启用机器人能力 |
+| `could not resolve bot identity …` | 飞书拒绝了 App ID 或 App Secret，机器人能力未启用，或域名与账号不符 |
 | `[session] <场景> failed (<类别>)` | 会话处理中的某一步失败。日志只记录错误类别，不记录消息内容 |
 | `[paseo-feishu] <场景>: <错误信息>` | 通知或装配中的错误 |
 

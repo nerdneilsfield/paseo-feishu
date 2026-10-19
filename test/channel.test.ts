@@ -131,6 +131,22 @@ describe("建通道配置", () => {
   });
 });
 
+describe("domain", () => {
+  test("未设置时不传 domain，设置后原样传给 SDK", () => {
+    mocks.createLarkChannel.mockClear();
+    createFeishuChannel({ feishuAppId: "a", feishuAppSecret: "s", ownerOpenId: OWNER });
+    createFeishuChannel({
+      feishuAppId: "a",
+      feishuAppSecret: "s",
+      feishuDomain: "https://open.larksuite.com",
+      ownerOpenId: OWNER,
+    });
+    const calls = mocks.createLarkChannel.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect("domain" in (calls[0] ?? {})).toBe(false);
+    expect(calls[1]?.["domain"]).toBe("https://open.larksuite.com");
+  });
+});
+
 describe("port 发送", () => {
   test("sendCard 返回新 messageId，updateCard 透传", async () => {
     const { feishu, fake } = setup();

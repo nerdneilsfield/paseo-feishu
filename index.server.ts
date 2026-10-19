@@ -10,7 +10,15 @@ import { createPaseoPort } from "./server/paseo";
 import { createSession } from "./server/session";
 import { createFileStore } from "./server/store";
 
+const LARK_DOMAIN = "https://open.larksuite.com";
 const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
+
+/** 空或 "feishu" 用 SDK 默认（国内）；"lark" 为国际版；其余当作完整 URL（私有部署）。 */
+function resolveDomain(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  if (!v || v.toLowerCase() === "feishu") return undefined;
+  return v.toLowerCase() === "lark" ? LARK_DOMAIN : v;
+}
 
 /** 缺任何必需项都明确报错，不退化为无鉴权或空运行。 */
 export function readConfig(env: NodeJS.ProcessEnv): PluginConfig {
@@ -20,10 +28,12 @@ export function readConfig(env: NodeJS.ProcessEnv): PluginConfig {
   if (missing.length > 0) {
     throw new Error(`paseo-feishu: missing required env: ${missing.join(", ")}`);
   }
+  const feishuDomain = resolveDomain(env.FEISHU_DOMAIN);
   const home = env.PASEO_HOME ?? join(homedir(), ".paseo");
   return {
     feishuAppId: env.FEISHU_APP_ID!,
     feishuAppSecret: env.FEISHU_APP_SECRET!,
+    ...(feishuDomain ? { feishuDomain } : {}),
     ownerOpenId: env.FEISHU_OWNER_OPEN_ID!,
     paseoUrl: env.PASEO_URL || DEFAULT_PASEO_URL,
     paseoPassword: env.PASEO_PASSWORD || undefined,

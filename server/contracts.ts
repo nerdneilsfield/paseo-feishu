@@ -278,6 +278,8 @@ export interface NotificationDeps {
 export interface PluginConfig {
   feishuAppId: string;
   feishuAppSecret: string;
+  /** 省略时为国内 Feishu；"lark" 为国际版；其余按完整 URL 处理。 */
+  feishuDomain?: string;
   ownerOpenId: string;
   paseoUrl: string;
   paseoPassword?: string;

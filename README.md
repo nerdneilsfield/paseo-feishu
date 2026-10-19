@@ -1,74 +1,85 @@
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="paseo-feishu: Paseo agents in Feishu/Lark" width="480">
+</p>
+
+**English** | [简体中文](docs/zh-CN/README.md)
+
 # paseo-feishu
 
-在飞书私聊里继续本机已有的 [Paseo](https://github.com/getpaseo/paseo) agent 会话：选择会话、发送消息、接收完成通知、批准或拒绝权限请求。
+Continue your existing [Paseo](https://github.com/getpaseo/paseo) agent sessions from a Feishu/Lark private chat. Pick a session, send it messages, get a notification when a turn ends, and approve or deny permission requests from your phone.
 
-这是一个运行在 Paseo daemon 内的服务端插件，不新建 agent，不引入独立的网关或数据库。
+paseo-feishu is a server plugin that runs inside your own Paseo daemon. It does not create agents, run a separate gateway, or need a public URL.
 
-**状态：** 已在本机 daemon 上验证插件可加载，并验证了与 Paseo 的连接、列出 agent、刷新 agent。飞书一侧（长连接、卡片渲染与回传、真实消息收发）以及 hook 的真实触发尚未实机验证。
+> **Status:** experimental. The plugin loads in a real Paseo daemon, and its Paseo connection, agent listing, and refresh are verified against a local daemon. The Feishu/Lark side (long connection, card rendering, button callbacks, real message delivery) and the real hook triggers have not been verified end to end.
 
-## 能做什么
+## Highlights
 
-- 在飞书私聊的卡片里选择一个已有 agent，之后的文本消息原样发给该 agent。
-- agent 的 turn 结束时（完成、失败或取消），在飞书收到通知，并附最后一段助手回复的摘要。
-- agent 请求工具权限时，在飞书收到审批卡片，可点击允许或拒绝。无法映射成二选一的请求（计划审阅、提问、模式变更），只提示回 Paseo 处理。
-- 只响应一个指定用户的私聊。其他用户的消息和卡片点击会被丢弃。
+- Selects an existing agent from a card, then forwards your text messages to that same agent session.
+- Notifies you when the bound agent's turn completes, fails, or is canceled, with an excerpt of the last assistant reply.
+- Shows allow/deny buttons for tool permission requests. Requests that cannot be expressed as allow or deny are flagged, and you handle them in Paseo.
+- Accepts messages and card clicks from exactly one Feishu/Lark user, in a private chat only.
+- Works with both Feishu (China) and Lark (international) through one setting.
 
-## 限制
+## Overview
 
-- 一个 daemon、一个飞书机器人、一个授权用户，仅私聊。
-- 不创建、归档、停止 agent，不镜像完整对话。
-- Paseo 未连通时，消息不会排队，也不会在恢复后补发；插件会回复“Paseo 未连接，消息未发送”。
-- 通知发送失败不重试。
-- 目前只支持 TCP 连接 daemon，不支持 unix socket。
+You run coding agents in Paseo on a workstation. When you leave your desk, the agents keep working, but you can no longer answer a permission prompt or see that a turn finished. paseo-feishu connects one Feishu/Lark bot to the daemon over a long-lived WebSocket connection, so a chat message reaches the same agent session you were using at your desk.
 
-## 安装
+It is a remote control, not a new agent runtime. In version 0.1, the bot's replies and card labels are in Chinese. It never creates, archives, or stops an agent. If the daemon is unreachable, it tells you the message was not sent and does not queue it.
 
-要求：Paseo daemon（已启用插件）、Node.js 22 或更高版本、npm、一个飞书企业自建应用。
+Version 0.1 supports one daemon, one bot, and one authorized user. The author is [nerdneilsfield](https://github.com/nerdneilsfield).
 
-飞书应用的创建与配置见 [docs/setup.md](./docs/setup.md)。完成后：
+## Installation
+
+Requires a Paseo daemon 0.8.0 or later with plugins enabled, Node.js 22 or later, and npm. You also need a Feishu/Lark custom app; [Setup](docs/en/setup.md) walks you through it.
 
 ```bash
-paseo plugin add <插件目录>
+paseo plugin add github:nerdneilsfield/paseo-feishu
 ```
 
-`<插件目录>` 替换为本仓库的绝对路径。安装时 Paseo 会运行 `npm install --omit=dev`。
+Paseo runs `npm install --omit=dev` during installation. To install from a local checkout instead, pass its absolute path in place of the `github:` source.
 
-## 快速开始
+The plugin has no pinned dependency versions. Each install resolves the latest `@getpaseo/client` and `@larksuite/channel`, so an upstream breaking change can stop the plugin from loading.
 
-1. 按 [docs/setup.md](./docs/setup.md) 创建飞书应用，取得 App ID、App Secret 和你的 open_id。
-2. 在启动 daemon 的环境里设置三个环境变量，然后重启 daemon：
+## Quick start
+
+Complete the app setup in [Setup](docs/en/setup.md) first. Then:
+
+1. Set three environment variables in the environment that starts the daemon, and restart the daemon.
 
    ```bash
-   export FEISHU_APP_ID=<App ID>
-   export FEISHU_APP_SECRET=<App Secret>
-   export FEISHU_OWNER_OPEN_ID=<你的 open_id，ou_ 开头>
+   export FEISHU_APP_ID=<your App ID>
+   export FEISHU_APP_SECRET=<your App Secret>
+   export FEISHU_OWNER_OPEN_ID=<your open_id, starting with ou_>
    ```
 
-3. 安装插件（见上文），运行 `paseo plugin ls`，确认 `paseo-feishu` 的状态为 `running`。
-4. 在飞书里给机器人发任意一条私聊消息。你应收到一张会话选择卡片，这条消息本身不会转发给任何 agent。
-5. 在卡片里选择一个 agent，之后发的文本会进入该 agent 的会话。
+2. Run `paseo plugin ls`. The `paseo-feishu` row shows the status `running`.
+3. Send any text message to the bot in a private chat. You receive a "Paseo · 选择会话" card, and the message is not forwarded to any agent.
+4. On the card, choose an agent. From then on, your text messages go to that agent, and the bot replies "已发送（非任务完成）到当前会话。" for each one it submits.
 
-## 配置
+If a required variable is missing, the plugin writes `missing required env: …` to its log and stays idle. Check it with `paseo plugin logs paseo-feishu`.
 
-| 环境变量 | 必需 | 默认值 | 说明 |
+## Configuration
+
+| Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `FEISHU_APP_ID` | 是 | 无 | 飞书应用的 App ID |
-| `FEISHU_APP_SECRET` | 是 | 无 | 飞书应用的 App Secret |
-| `FEISHU_OWNER_OPEN_ID` | 是 | 无 | 唯一被授权的用户的 open_id |
-| `PASEO_URL` | 否 | `ws://127.0.0.1:6767/ws` | daemon 的 WebSocket 地址 |
-| `PASEO_PASSWORD` | 否 | 无 | daemon 设置了密码时必填，明文 |
-| `STATE_FILE` | 否 | `~/.paseo/plugins-data/paseo-feishu/state.json` | 绑定与去重状态文件 |
+| `FEISHU_APP_ID` | Yes | none | App ID of the Feishu/Lark app |
+| `FEISHU_APP_SECRET` | Yes | none | App Secret of the Feishu/Lark app |
+| `FEISHU_OWNER_OPEN_ID` | Yes | none | open_id of the one authorized user |
+| `FEISHU_DOMAIN` | No | `feishu` | `feishu` for China, `lark` for international, or a full URL for a private deployment |
+| `PASEO_URL` | No | `ws://127.0.0.1:6767/ws` | WebSocket address of the daemon |
+| `PASEO_PASSWORD` | No | none | Plaintext daemon password, if one is set |
+| `STATE_FILE` | No | `~/.paseo/plugins-data/paseo-feishu/state.json` | Binding and deduplication state |
 
-缺少任一必需变量时，插件只在日志里写出缺失项，然后空载，不会连接飞书或 Paseo。完整说明见 [docs/reference.md](./docs/reference.md)。
+The [reference](docs/en/reference.md) documents every variable, command, card, and limit.
 
-## 文档
+## Documentation
 
-- [docs/setup.md](./docs/setup.md)：飞书应用设置、安装、验证、排错。
-- [docs/reference.md](./docs/reference.md)：配置、命令、卡片、状态文件、日志、已知限制。
-- [SPEC.md](./SPEC.md)：产品行为、范围与 16 条验收场景。
-- [DESIGN.md](./DESIGN.md)：架构、SDK 接口、并发与恢复设计。
+- [Setup](docs/en/setup.md): create the Feishu/Lark app, install the plugin, and send your first message.
+- [Reference](docs/en/reference.md): configuration, chat commands, notifications, state file, and known limits.
+- [Product spec](docs/design/SPEC.md) and [technical design](docs/design/DESIGN.md): behavior, acceptance scenarios, and architecture. Both are written in Chinese.
+- Report problems in the [issue tracker](https://github.com/nerdneilsfield/paseo-feishu/issues).
 
-## 开发
+## Development
 
 ```bash
 npm install
@@ -76,8 +87,8 @@ npm run typecheck
 npm test
 ```
 
-测试使用 fake 的 Paseo 与飞书端口，只能说明逻辑正确，不代表端到端通过。
+The tests use fake Paseo and Feishu/Lark ports. They verify logic and do not replace an end-to-end run against a real app.
 
-## 许可证
+## License
 
-MIT，见 [LICENSE](./LICENSE)。
+MIT. See [LICENSE](LICENSE).
