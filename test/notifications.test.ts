@@ -79,7 +79,7 @@ function setup() {
     // 后台 void task() 留一个 macrotask 让它跑完。
     await new Promise((r) => setTimeout(r, 0));
   };
-  return { handlers, session, feishu, cards, emit, deps };
+  return { handlers, session, feishu, cards, emit, deps, observe };
 }
 
 const agent = { id: "agent-1", workspaceId: null, parentAgentId: null, provider: "codex", cwd: "/x", title: "Relay" };
@@ -148,6 +148,23 @@ describe("registerNotifications", () => {
     await t.emit("agent.turn_ended", e);
     await t.emit("agent.turn_ended", e);
     expect(t.feishu.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers a late old turn once without sealing or repainting the new turn", async () => {
+    const t = setup();
+    t.observe({ agentId: agent.id, event: { type: "turn_started", provider: "codex", turnId: "turn-2" } } as TimelineEvent);
+    const ended = t.handlers.get("agent.turn_ended")!;
+    const old = turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "old result" }]);
+    await ended(old as never);
+    await ended(old as never);
+    expect(t.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", "Relay · 已完成（轮次 turn-1）\nold result");
+    expect(t.feishu.sendCard).not.toHaveBeenCalled();
+    expect(t.feishu.updateCard).not.toHaveBeenCalled();
+
+    await ended(turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "new result" }], "turn-2") as never);
+    await vi.waitFor(() => expect(t.feishu.sendText).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).toContain("new result");
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("old result");
   });
 
   it("permission_resolved 重复到达只处理一次", async () => {

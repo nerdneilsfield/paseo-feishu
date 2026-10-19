@@ -48,7 +48,6 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     if (!scope || scope.agentId !== event.agent.id || !event.turnId) return;
     const key = `${event.agent.id}:${event.turnId}`;
     const finish = session.liveReplies.seal(scope, event.turnId);
-    if (!finish) return;
     if (!(await session.markNotified(key)) || !session.isCurrentScope(scope)) return;
     const title = event.agent.title ?? event.agent.id.slice(0, 8);
     const text = lastAssistantText(event.timeline);
@@ -57,7 +56,11 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     // Take only the protocol string; never serialize diagnostics or unknown objects.
     const reason = rawReason?.replace(/\s+/g, " ").trim().slice(0, 300) ?? "";
     const reminder = `${title} · ${phase}${reason ? `：${reason}` : ""}`;
-    void finish.finish({ title, phase, reason, updatedAt: Date.now(), text, incomplete: false }, reminder)
+    // A late end event gets its own message; it must not seal or repaint the new turn.
+    const delivery = finish
+      ? finish.finish({ title, phase, reason, updatedAt: Date.now(), text, incomplete: false }, reminder)
+      : deps.feishu.sendText(scope.chatId, `${reminder}（轮次 ${event.turnId.slice(0, 8)}）${text ? `\n${text}` : ""}`);
+    void delivery
       .catch((err) => logError("turn_ended notify failed", err));
   });
 

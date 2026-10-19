@@ -99,14 +99,14 @@ Notifications go only to the currently bound agent. With no bound session, the p
 
 | Event | Condition | What you receive |
 | --- | --- | --- |
-| An agent turn ends | Its ID matches the currently observed turn | The reply card shows the final result, followed by one short completion, failure or cancellation notification. |
+| An agent turn ends | The agent is currently bound and the turn has an ID | The current turn updates its reply card and sends a short notification; a late older turn sends a separate text result. |
 | An agent requests permission | The agent is the bound agent | An approval card, or a notice card that says to handle the request in Paseo. |
 | A permission request is resolved elsewhere | An approval card for it exists in the chat | The approval card changes to "已在 Paseo 处理" (handled in Paseo). |
 | An agent is archived | The agent is the bound agent | A text message that the binding is no longer usable and you must select a session again. |
 
 `<title>` is the agent's title. If the agent has none, it is the first 8 characters of the agent ID.
 
-**Live replies.** The plugin updates one card from public assistant messages, at most once per second. The final card shows up to 12,000 characters. If the card fails, a text notification carries the result. Older turns and end events without a matching turn ID are ignored; the plugin does not retain retired cards or recover late end events.
+**Live replies.** The plugin updates one card from public assistant messages, at most once per second. The final card shows up to 12,000 characters. If the card fails, a text notification carries the result. A late end event from the currently bound agent gets a separate text result with its turn ID, once; it does not change the current reply card. End events without a turn ID are ignored. Retired cards are not cached.
 
 **Approval cards and notice cards.** The plugin builds an approval card with buttons only when the permission kind is a tool call and its actions are exactly one allow and one deny. Every other request gets a notice card that tells you to handle it in Paseo, with no buttons. Examples are free-text questions, plan reviews, mode changes, and requests with more than two actions.
 
