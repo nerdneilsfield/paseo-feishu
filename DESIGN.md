@@ -68,13 +68,13 @@ Paseo Feishu Server Plugin  (one daemon subprocess)
 | `@larksuite/channel` | 飞书长连接、消息标准化、卡片发送、交互回调 | 确认生产包版本并锁定 |
 | `zod`（可复用） | 配置和回调 payload 结构校验 | 仅简单校验，不引入额外框架 |
 
-在 2026-10-19 检查的源码中，Paseo 插件包为 `0.11.2`，飞书 Channel 包的仓库 `package.json` 为 `0.7.1`。它们是**源码检查时的版本，不是自动宣称已验证的发布兼容矩阵**；实现需与 daemon 实际安装版本对齐，并锁定经过测试的依赖。
+在 2026-10-19 检查的源码中，Paseo 插件包为 `0.11.2`，飞书 Channel 包的仓库 `package.json` 为 `0.7.1`。它们是**源码检查时的版本，不是自动宣称已验证的发布兼容矩阵**；**不锁版本**：依赖写 `*`，安装时取最新；API 破坏性变更时让插件在加载或运行时崩溃，以此提示需要升级支持，不为兼容旧版本写垫片。
 
 Paseo host 只提供 `@getpaseo/plugin/*` 与 `zod`；`@larksuite/channel`、`@getpaseo/client` 等运行时依赖不是宿主模块，必须能被 esbuild 打进 bundle，或位于插件目录的 `node_modules`。`npm` 包形式安装时 daemon 会执行 `npm install --omit=dev`；目录 / Git 源不会自动安装依赖，需在 `paseo-plugin.json` 的 `build`（argv 数组，不经过 shell）里写 `["npm", "ci", "--omit=dev"]`。
 
 以根目录 `paseo-plugin.json`（最小形态：`id` 与 `requirements.paseo`）及 `index.server.ts`（默认导出 `contribute(server)`）为插件入口；插件默认不启动，须 `pluginsEnabled` 开启后用 `paseo plugin add <路径>` 安装。不 fork Paseo。
 
-**版本（已核实）：** 开发机上的 daemon 是 `0.11.4`（`paseo --version`），npm 上 `@getpaseo/{plugin,client,protocol}` 的最新稳定版也是 `0.11.4`。文中的源码结论读自上游 `main`（0.12.0-beta.3），已对照 `v0.11.4` tag：`plugin-process.ts`、`runtime.ts`、`bundle-evaluator.ts`、`plugin-sdk-specifiers.ts`、`plugin/src/server/{contracts,lifecycle}.ts`、`session-admission-auth.ts` 与 `main` 相同；`compiler.ts` 与 `client/src/index.ts` 仅有与本插件无关的小差异；`agent-manager.ts` 的 hook 派发点与 `shouldDispatchEvent` 逻辑同样存在于 `0.11.4`。依赖版本锁定为 `0.11.4`。
+**版本（已核实）：** 开发机上的 daemon 是 `0.11.4`（`paseo --version`），npm 上 `@getpaseo/{plugin,client,protocol}` 的最新稳定版也是 `0.11.4`。文中的源码结论读自上游 `main`（0.12.0-beta.3），已对照 `v0.11.4` tag：`plugin-process.ts`、`runtime.ts`、`bundle-evaluator.ts`、`plugin-sdk-specifiers.ts`、`plugin/src/server/{contracts,lifecycle}.ts`、`session-admission-auth.ts` 与 `main` 相同；`compiler.ts` 与 `client/src/index.ts` 仅有与本插件无关的小差异；`agent-manager.ts` 的 hook 派发点与 `shouldDispatchEvent` 逻辑同样存在于 `0.11.4`。依赖不锁版本（`*`）；`paseo-plugin.json` 的 `requirements.paseo` 保留 `>=0.8.0`——宿主要求该字段存在，缺失会被当成 0.8 之前的旧插件拒绝安装。
 
 ## 3. 外部 API 映射
 

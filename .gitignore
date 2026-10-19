@@ -151,3 +151,4 @@ vite.config.ts.timestamp-*
 # paseo-feishu
 node_modules/
 .cw/meter.jsonl
+package-lock.json
