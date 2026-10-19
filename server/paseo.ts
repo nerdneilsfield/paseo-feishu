@@ -248,6 +248,8 @@ export function createPaseoPort(
         (a) => a.behavior === decision,
       )?.id;
       try {
+        // SDK 的 respondToPermission 只把消息写进 socket 就返回，daemon 拒绝时不会抛。
+        // 权威结果是随后 refresh 到的 pendingPermissions：请求还在就是没批准。
         await handle.respondToPermission({
           requestId,
           response:
@@ -261,6 +263,10 @@ export function createPaseoPort(
                   ...(selectedActionId ? { selectedActionId } : {}),
                 },
         });
+        const after = await handle.refresh();
+        if (!after) return { ok: false, reason: "failed" };
+        const stillPending = (handle.pendingPermissions ?? []).some((r) => r.id === requestId);
+        if (stillPending) return { ok: false, reason: "failed" };
         return { ok: true };
       } catch (err) {
         console.error(
