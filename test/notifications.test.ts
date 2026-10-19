@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createLiveReplies } from "../server/live-replies.js";
+import { createCardBuilders } from "../server/cards.js";
 import { registerNotifications } from "../server/notifications.js";
 import type {
   NotificationDeps,
   SessionController,
+  TimelineEvent,
 } from "../server/contracts.js";
 
 type Handler = (event: never, ctx?: never) => unknown;
@@ -19,7 +22,11 @@ function setup() {
   };
   const notified = new Set<string>();
   const decided = new Map<string, string>();
+  const scope = { generation: 1, agentId: "agent-1", chatId: "chat-1" };
   const session = {
+    currentScope: () => scope,
+    isCurrentScope: (s: unknown) => s === scope,
+    liveReplies: null as unknown as SessionController["liveReplies"],
     currentAgentId: vi.fn((): string | null => "agent-1"),
     currentChatId: vi.fn((): string | null => "chat-1"),
     markNotified: vi.fn(async (key: string) => {
@@ -45,6 +52,16 @@ function setup() {
     permissionResolved: vi.fn(() => ({ kind: "resolved" })),
     notice: vi.fn(() => ({ kind: "notice" })),
   };
+  let observe!: (event: TimelineEvent) => void;
+  session.liveReplies = createLiveReplies({
+    paseo: { isReady: () => true, subscribeTimeline: (_id: string, handler: typeof observe) => {
+      observe = handler;
+      return Object.assign(() => {}, { ready: new Promise<void>(() => {}), subscriptionId: "test", release: async () => {} });
+    } } as never, feishu, cards: createCardBuilders(),
+    isCurrent: (s) => s === scope, invalidateHistory() {},
+  });
+  session.liveReplies.bind(scope);
+  observe({ agentId: scope.agentId, event: { type: "turn_started", provider: "codex", turnId: "turn-1" } } as TimelineEvent);
   const deps = {
     session: (() => session) as unknown as NotificationDeps["session"],
     feishu,
@@ -57,6 +74,9 @@ function setup() {
   const emit = async (name: string, event: unknown) => {
     const h = handlers.get(name);
     if (!h) throw new Error(`no handler for ${name}`);
+    if (name === "agent.turn_ended" && (event as { turnId?: string }).turnId) {
+      observe({ agentId: scope.agentId, event: { type: "turn_started", provider: "codex", turnId: (event as { turnId: string }).turnId } } as TimelineEvent);
+    }
     await h(event as never);
     // 后台 void task() 留一个 macrotask 让它跑完。
     await new Promise((r) => setTimeout(r, 0));
@@ -182,8 +202,8 @@ describe("registerNotifications", () => {
         { type: "assistant_message", text: "last" },
       ]),
     );
-    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.stringContaining("last"));
-    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", expect.not.stringContaining("first"));
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).toContain("last");
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("first");
   });
 
   it("连续的助手分片拼成完整答复，工具输出不并入", async () => {
@@ -197,10 +217,48 @@ describe("registerNotifications", () => {
         { type: "assistant_message", text: "结尾" },
       ]),
     );
-    const calls = t.feishu.sendText.mock.calls as unknown as Array<[string, string]>;
-    const body = calls.at(-1)?.[1] ?? "";
+    const body = JSON.stringify(t.feishu.sendCard.mock.calls);
     expect(body).toContain("后半结尾");
     expect(body).not.toContain("前半");
     expect(body).not.toContain("secret command output");
   });
+});
+
+
+describe("authoritative final content", () => {
+  it("ignores trailing non-message items, excludes earlier dialogue, and bounds final text", async () => {
+    const t = setup();
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, [
+      { type: "assistant_message", text: "old answer" }, { type: "user_message", text: "new question" },
+      { type: "assistant_message", text: "new answer" + "x".repeat(13000) }, { type: "reasoning", text: "private" }, { type: "tool_call", text: "secret" },
+    ]));
+    const card = JSON.stringify(t.feishu.sendCard.mock.calls);
+    expect(card).toContain("new answer"); expect(card).toContain("截断"); expect(card).toContain("Paseo");
+    expect(card).not.toContain("old answer"); expect(card).not.toContain("private"); expect(card).not.toContain("secret");
+    expect(card.length).toBeLessThan(13000);
+    expect(t.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", "Relay · 已完成");
+  });
+  it("a hook without turn ownership does not reuse historical assistant text", async () => {
+    const t = setup();
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "old answer" }], null));
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("old answer");
+    expect(t.feishu.sendCard).not.toHaveBeenCalled();
+    expect(t.feishu.sendText).not.toHaveBeenCalled();
+  });
+});
+
+it.each(["failed", "canceled"] as const)("%s preserves a bounded protocol reason in final card, reminder and fallback", async kind => {
+  const reason = "specific reason\n" + "x".repeat(500);
+  const outcome = kind === "failed" ? { kind, error: { message: reason, diagnostic: "DO NOT SERIALIZE" } } : { kind, reason };
+  const event = turnEvent(outcome, [{ type: "assistant_message", text: "final body" }]);
+  const t = setup();
+  await t.emit("agent.turn_ended", event);
+  const card = JSON.stringify(t.feishu.sendCard.mock.calls);
+  expect(card).toContain("specific reason"); expect(card).not.toContain("DO NOT SERIALIZE");
+  const reminder = (t.feishu.sendText.mock.calls as unknown as [string, string][])[0]![1];
+  expect(reminder).toContain("specific reason"); expect(reminder.length).toBeLessThan(350);
+  expect(reminder).not.toContain("final body"); expect(reminder).not.toContain("\n");
+  const fallback = setup(); fallback.feishu.sendCard.mockRejectedValueOnce(new Error("card API"));
+  await fallback.emit("agent.turn_ended", event);
+  expect(fallback.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", `${reminder}\nfinal body`);
 });

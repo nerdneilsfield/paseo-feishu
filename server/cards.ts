@@ -83,7 +83,7 @@ function formatTime(ts: number): string {
 }
 
 function statusText(s: AgentStatus): string {
-  return STATUS_TEXT[s] ?? "未知";
+  return STATUS_TEXT[s];
 }
 
 /** 当前绑定置顶，其余按 lastActivityAt 倒序、相同时间按 id 排序。 */
@@ -103,6 +103,18 @@ function agentLine(a: AgentSummary): string {
 
 export function createCardBuilders(): CardBuilders {
   return {
+    reply(input) {
+      return {
+        schema: SCHEMA,
+        header: { title: { tag: "plain_text", content: `Paseo · ${input.phase}` }, template: "grey" },
+        body: { elements: [
+          md(`**${oneLine(input.title).slice(0, 200)}** · ${input.phase} · 最近事件 ${formatTime(input.updatedAt)}`),
+          ...(input.reason ? [md(`原因：${excerpt(input.reason, 300)}`)] : []),
+          md(excerpt(input.text || "暂无公开助手内容", 12000)),
+          ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
+        ] },
+      };
+    },
     help({ commands }) {
       return {
         schema: SCHEMA,

@@ -2,7 +2,6 @@ import type {
   AgentSummary,
   BindingScope,
   CardAction,
-  CardBuilders,
   CardResponse,
   FeishuCard,
   FeishuPort,
@@ -13,20 +12,19 @@ import type {
   SendResult,
   SessionController,
   SessionDeps,
-  Store,
   ToastType,
 } from "./contracts.js";
+import { createLiveReplies } from "./live-replies.js";
 import { HistoryReadError, readHistory, type HistoryPosition } from "./history.js";
 import { logError, logInfo } from "./log.js";
 
 // 会话控制：身份校验、绑定切换、文本转发卡片动作。
 // SWITCHING 只存在于内存；持久化的永远是最后一次成功的 Binding。
 
-const CLOSE_TIMEOUT_MS = 2000;
 let scopeGeneration = 0;
 
 function short(id: string): string {
-  return id.length <= 6 ? `…${id}` : `…${id.slice(-6)}`;
+  return `…${id.slice(-6)}`;
 }
 
 function logErr(scope: string, err: unknown, sensitive: readonly string[] = []): void {
@@ -51,7 +49,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   function currentScope(): BindingScope | null {
     const binding = state.binding;
     return !closed && !switching && binding?.agentId
-      ? Object.freeze({ generation, agentId: binding.agentId, chatId: binding.chatId })
+      ? { generation, agentId: binding.agentId, chatId: binding.chatId }
       : null;
   }
 
@@ -59,6 +57,9 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     const current = currentScope();
     return current !== null && current.generation === scope.generation && current.agentId === scope.agentId && current.chatId === scope.chatId;
   }
+
+  const liveReplies = createLiveReplies({ paseo, feishu, cards, isCurrent: isCurrentScope, invalidateHistory: () => { history = null; }, now });
+  liveReplies.bind(currentScope());
 
   function rememberNavigation(messageId: string, chatId: string): void {
     navigationCards.set(messageId, { generation, chatId });
@@ -68,7 +69,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
 
   // 写盘串行化：所有 save 经同一条 promise 链，避免并发交错。
   let saveChain: Promise<void> = Promise.resolve();
-  // 后台任务跟踪：close() 等待它们（总上限 2 秒）。
+  // close() 等待后台任务；最终关闭期限由宿主负责。
   const pending = new Set<Promise<void>>();
   // 选择、刷新、翻页画的是同一张卡。点击时同步取号，写卡串行，
   // 旧请求的结果回来时号已经变了就丢弃，避免盖住更新的点击。
@@ -90,14 +91,12 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     return op;
   }
 
-  const store: Store = storeDep;
-
   function snapshot(): PersistedState {
     return JSON.parse(JSON.stringify(state)) as PersistedState;
   }
 
   function enqueueSave(): Promise<void> {
-    const op = saveChain.then(() => store.save(snapshot()));
+    const op = saveChain.then(() => storeDep.save(snapshot()));
     saveChain = op.catch(() => undefined);
     return op;
   }
@@ -147,19 +146,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     }
     if (closed || expectedGeneration !== generation || cardEpoch !== sessionCardEpoch) return;
     const currentAgentId = state.binding?.agentId ?? null;
-    let card: ReturnType<CardBuilders["picker"]>;
-    try {
-      card = cards.picker({
-        agents,
-        page,
-        pickerRevision: nextRev,
-        currentAgentId,
-        connected: ok,
-      });
-    } catch (err) {
-      logErr("build picker card", err);
-      return;
-    }
+    const card = cards.picker({ agents, page, pickerRevision: nextRev, currentAgentId, connected: ok });
     let messageId: string;
     try {
       messageId = await feishu.sendCard(chatId, card);
@@ -207,7 +194,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         await safeSendText(chatId, "当前会话不可用（不存在或已归档），请重新选择会话。");
         return;
       }
-      await sendNavigationCard(chatId, cards.current({ agent, pickerRevision: state.binding!.pickerRevision }), scope.generation);
+      await sendNavigationCard(chatId, cards.current({ agent }), scope.generation);
     } catch (err) {
       logErr("read status", err);
       if (isCurrentScope(scope)) await safeSendText(chatId, "状态读取失败，请稍后重试。");
@@ -356,6 +343,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       return;
     }
     // 同一原子快照的目标：此后不再重新读取绑定。
+    const targetScope = currentScope();
     const targetAgentId = agentId;
     logInfo("session.routed", { messageId: msg.messageId, action: "forward", agentId: short(agentId), paseoConnected: paseo.isReady() });
     const targetChatId = msg.chatId;
@@ -376,6 +364,12 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       await safeSendText(targetChatId, "Paseo 未连接，消息未发送");
       return;
     }
+    if (!targetScope || !(await liveReplies.ensureReady(targetScope)) || !isCurrentScope(targetScope) || !paseo.isReady()) {
+      state.deliveries[msg.messageId] = { state: "rejected", at: now() };
+      await enqueueSave().catch((err) => logErr("save observation rejection", err));
+      if (targetScope && isCurrentScope(targetScope)) await safeSendText(targetChatId, "动态回复观察尚未就绪，消息未发送，请稍后重试。");
+      return;
+    }
     let result: SendResult;
     try {
       result = await paseo.send(targetAgentId, body);
@@ -390,8 +384,9 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     } catch (err) {
       logErr("save delivery", err);
     }
+    if (!isCurrentScope(targetScope)) return;
     if (outcome === "accepted") {
-      await safeSendText(targetChatId, "已发送（非任务完成）到当前会话。");
+      await safeSendText(targetChatId, "Paseo 已受理（非任务完成），进展将在回复卡显示。");
     } else if (outcome === "unknown") {
       await safeSendText(targetChatId, "发送结果不确定，请到 Paseo 核对，未自动重发");
     } else if (outcome === "not_found" || outcome === "archived") {
@@ -415,6 +410,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (switching) return toast("loading", "正在切换，请稍候");
     if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
     switching = true;
+    liveReplies.bind(null);
     generation = ++scopeGeneration;
     history = null;
     const expectedGeneration = generation;
@@ -429,12 +425,14 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           logErr(`refresh ${short(agentId)}`, err);
           if (closed || generation !== expectedGeneration) return;
           switching = false;
+          liveReplies.bind(currentScope());
           await safeSendText(prevChatId, "未切换：验证会话时发生错误，保留原绑定。");
           return;
         }
         if (closed || generation !== expectedGeneration) return;
         if (!summary || summary.archived) {
           switching = false;
+          liveReplies.bind(currentScope());
           await safeSendText(
             prevChatId,
             `未切换：目标会话${summary ? "已归档" : "不存在"}，保留原绑定。`,
@@ -454,6 +452,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         // 可观测翻转必须是原子的：绑定与 switching 在同一同步块内一起变，
         // 落盘只影响崩溃恢复，不影响当前内存路由。
         switching = false;
+        liveReplies.bind(currentScope());
         try {
           await enqueueSave();
         } catch (err) {
@@ -461,15 +460,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         }
         if (closed || generation !== expectedGeneration) return;
         rememberNavigation(evt.messageId, prevChatId);
-        let card: ReturnType<CardBuilders["current"]>;
-        try {
-          card = cards.current({ agent: summary, pickerRevision: nextRev });
-        } catch (err) {
-          logErr("build current card", err);
-          await safeSendText(prevChatId, "已切换到新会话，但卡片构造失败，下次打开选择卡即可看到最新状态。");
-          return;
-        }
-        if (closed || generation !== expectedGeneration) return;
+        const card = cards.current({ agent: summary });
         try {
           await paintSessionCard(cardEpoch, evt.messageId, card, expectedGeneration);
         } catch (err) {
@@ -530,51 +521,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         }
       })(),
       "refresh_picker",
-    );
-    return toast("loading", "正在刷新…");
-  }
-
-  async function handleCurrentRefresh(evt: IncomingCardAction, rev: number): Promise<CardResponse> {
-    if (switching) return toast("loading", "正在切换，请稍候");
-    const binding = state.binding;
-    if (!binding || binding.pickerMessageId !== evt.messageId || binding.pickerRevision !== rev) {
-      return toast("warning", "卡片已过期，请重新打开");
-    }
-    if (!binding.agentId) return toast("info", "尚未选择会话");
-    if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
-    const agentId = binding.agentId;
-    const pickerRevision = binding.pickerRevision;
-    const chatId = binding.chatId;
-    const expectedGeneration = generation;
-    const cardEpoch = nextCardEpoch();
-    runBackground(
-      (async () => {
-        let summary: AgentSummary | null;
-        try {
-          summary = await paseo.refreshAgent(agentId);
-        } catch (err) {
-          logErr(`refresh ${short(agentId)}`, err);
-          if (!closed && generation === expectedGeneration) await safeSendText(chatId, "刷新失败");
-          return;
-        }
-        if (closed || generation !== expectedGeneration) return;
-        if (!summary || summary.archived) {
-          await safeSendText(chatId, "当前会话不可用，请重新选择");
-          return;
-        }
-        try {
-          await paintSessionCard(
-            cardEpoch,
-            evt.messageId,
-            cards.current({ agent: summary, pickerRevision }),
-            expectedGeneration,
-          );
-        } catch (err) {
-          logErr(`updateCard ${short(evt.messageId)}`, err);
-          await safeSendText(chatId, "刷新失败：卡片更新失败");
-        }
-      })(),
-      "refresh_current",
     );
     return toast("loading", "正在刷新…");
   }
@@ -685,12 +631,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         return toast("loading", "正在读取历史…");
       case "select_agent":
         return handleSelect(evt, action.agentId, action.pickerRevision);
-      case "open_picker":
-        return handlePickerRefresh(evt, action.pickerRevision, 0);
       case "refresh_agents":
         return handlePickerRefresh(evt, action.pickerRevision, 0);
-      case "refresh_current":
-        return handleCurrentRefresh(evt, action.pickerRevision);
       case "page_agents":
         return handlePickerRefresh(evt, action.pickerRevision, action.page);
       case "approve_permission":
@@ -729,32 +671,21 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
 
   async function close(): Promise<void> {
     closed = true;
+    liveReplies.close();
     generation = ++scopeGeneration;
     history = null;
     navigationCards.clear();
-    const drain = (async () => {
-      try {
-        await saveChain;
-      } catch {
-        // save 错误已在各自调用处记录，这里只保证等待。
-      }
-      const inFlight = [...pending];
-      if (inFlight.length > 0) await Promise.allSettled(inFlight);
-      try {
-        await saveChain;
-      } catch {
-        // 同上。
-      }
-    })();
-    await Promise.race([
-      drain,
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, CLOSE_TIMEOUT_MS);
-      }),
-    ]);
+    await saveChain;
+    await Promise.allSettled([...pending]);
+    await saveChain;
   }
 
   const controller: SessionController = {
+    liveReplies,
+    resumeObservation() {
+      const scope = currentScope();
+      if (scope && paseo.isReady()) void liveReplies.ensureReady(scope, false);
+    },
     handleText,
     handleCardAction,
     currentScope,

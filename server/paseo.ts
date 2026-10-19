@@ -3,7 +3,6 @@ import type { PaseoAgent, PaseoClient } from "@getpaseo/client";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { logError, logInfo } from "./log.js";
 import type {
-  AgentStatus,
   AgentSummary,
   ConnectablePaseoPort,
   PendingPermission,
@@ -12,8 +11,6 @@ import type {
   SendResult,
 } from "./contracts.js";
 
-/** close() 的等待上限：宿主关闭只给约 4 秒，端口必须在此之前让出。 */
-const CLOSE_TIMEOUT_MS = 3000;
 /** 权限摘要上限：只给操作人看个大概，不带完整命令与输出。 */
 const PERMISSION_SUMMARY_LIMIT = 300;
 const AGENTS_PAGE_LIMIT = 200;
@@ -25,19 +22,6 @@ function cwdLabel(cwd: string): string {
   return parts.slice(-2).join("/");
 }
 
-function mapStatus(status: PaseoAgent["status"]): AgentStatus {
-  switch (status) {
-    case "running":
-    case "idle":
-    case "error":
-    case "closed":
-    case "initializing":
-      return status;
-    default:
-      return "unknown";
-  }
-}
-
 function toAgentSummary(agent: PaseoAgent): AgentSummary {
   const parsed = Date.parse(agent.updatedAt);
   return {
@@ -45,14 +29,10 @@ function toAgentSummary(agent: PaseoAgent): AgentSummary {
     title: agent.title ?? `Agent ${agent.id.slice(0, 8)}`,
     provider: agent.provider,
     cwdLabel: cwdLabel(agent.cwd),
-    status: mapStatus(agent.status),
+    status: agent.status,
     archived: agent.archivedAt != null,
     lastActivityAt: Number.isNaN(parsed) ? 0 : parsed,
   };
-}
-
-function truncate(text: string, limit: number): string {
-  return text.length > limit ? text.slice(0, limit) : text;
 }
 
 /**
@@ -92,26 +72,14 @@ export function toPendingPermission(
       .join("\n") ||
     request.name ||
     request.kind;
-  const summary = truncate(rawSummary, PERMISSION_SUMMARY_LIMIT);
-  if (mappable && allowActionId && denyActionId) {
-    return {
-      requestId: request.id,
-      agentId,
-      kind,
-      title: request.title ?? request.name,
-      summary,
-      mappable: true,
-      allowActionId,
-      denyActionId,
-    };
-  }
+  const summary = rawSummary.slice(0, PERMISSION_SUMMARY_LIMIT);
   return {
     requestId: request.id,
     agentId,
     kind,
     title: request.title ?? request.name,
     summary,
-    mappable: false,
+    mappable,
   };
 }
 
@@ -159,6 +127,11 @@ export function createPaseoPort(
         // 日志里只放 url 与错误，不放密码。
         logError("paseo.connect.failed", err, {}, [config.paseoPassword ?? ""]);
       }
+    },
+
+    subscribeTimeline(agentId, handler) {
+      ensureReady();
+      return client.agents.ref(agentId).timeline.subscribe(handler);
     },
 
     async readTimeline(agentId, options) {
@@ -286,11 +259,7 @@ export function createPaseoPort(
       if (closed) return;
       closed = true;
       try {
-        // 宿主只给约 4 秒，client.close()  hanging 也不能拖住 cleanup。
-        await Promise.race([
-          client.close(),
-          new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
-        ]);
+        await client.close();
       } catch (err) {
         console.error(
           "[paseo-feishu] paseo close failed:",

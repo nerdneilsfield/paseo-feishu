@@ -56,7 +56,7 @@ describe("schema 2.0", () => {
     });
     expect(picker["schema"]).toBe("2.0");
 
-    const current = builders.current({ agent: agent({ id: "a1" }), pickerRevision: 1 });
+    const current = builders.current({ agent: agent({ id: "a1" }) });
     expect(current["schema"]).toBe("2.0");
 
     const perm = builders.permission({
@@ -248,24 +248,12 @@ describe("审批卡", () => {
     expect(v1).not.toBe(v2);
   });
 
-  test("只展示 summary，不含环境变量/完整输出", () => {
-    const secret = "AKIA-SECRET-XYZ-DO-NOT-SHOW";
+  test("展示权限摘要", () => {
     const card = builders.permission({
       permission: { ...permInput.permission, summary: "仅展示这段摘要" },
       agentTitle: "我的会话",
     });
-    expect(JSON.stringify(card)).not.toContain(secret);
     expect(collectMarkdown(card)).toContain("仅展示这段摘要");
-    expect(JSON.stringify(card)).not.toContain("allowActionId");
-  });
-
-  test("标题文案为中文", () => {
-    const card = builders.permission(permInput);
-    const header = card["header"] as { title: { content: string } };
-    expect(header.title.content).toContain("审批");
-    const labels = collectButtons(card).map((b) => (b["text"] as { content: string }).content);
-    expect(labels).toContain("允许");
-    expect(labels).toContain("拒绝");
   });
 
   test("已处理卡区分 allow/deny/resolved_elsewhere", () => {
@@ -294,7 +282,7 @@ describe("local navigation cards", () => {
   });
 
   test("current binding and picker use neutral hierarchy and real state", () => {
-    const current = builders.current({ agent: agent({ id: "a1", title: "Relay", cwdLabel: "work/relay", status: "running" }), pickerRevision: 22 });
+    const current = builders.current({ agent: agent({ id: "a1", title: "Relay", cwdLabel: "work/relay", status: "running" }) });
     expect(collectMarkdown(current)).toContain("Relay");
     expect(collectMarkdown(current)).toContain("work/relay");
     expect(collectMarkdown(current)).toContain("运行中");

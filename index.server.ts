@@ -74,7 +74,10 @@ export default function contribute(server: PluginServerContext): () => void {
 
   void (async () => {
     // 先连 Paseo（不阻塞），再起 session，最后连飞书：飞书消息进来时 session 必须已就绪。
-    void paseo.connect();
+    const connection = paseo.connect();
+    void connection.then(() => {
+      if (!stopped && paseo.isReady()) session?.resumeObservation();
+    });
     logInfo("startup.session.loading", { stateFile: config.stateFile });
     const created = await createSession({
       ownerOpenId: config.ownerOpenId,
@@ -88,6 +91,7 @@ export default function contribute(server: PluginServerContext): () => void {
       return;
     }
     session = created;
+    if (paseo.isReady()) created.resumeObservation();
     logInfo("startup.session.ready", { agentId: idHint(created.currentAgentId() ?? undefined) });
     await channel.start(created);
     logInfo("startup.ready", { paseoConnected: paseo.isReady() });

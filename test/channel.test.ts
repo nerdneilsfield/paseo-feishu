@@ -67,8 +67,10 @@ function makeFakeSdk(): FakeSdk {
 
 function makeSession(over: Partial<SessionController> = {}): SessionController {
   return {
+    liveReplies: { bind() {}, ensureReady: async () => true, seal: () => null, waiting() {}, close() {} },
     handleText: vi.fn().mockResolvedValue(undefined),
     handleCardAction: vi.fn().mockResolvedValue({ toast: { type: "success", content: "ok" } }),
+    resumeObservation() {},
     currentScope: () => null,
     isCurrentScope: () => false,
     currentAgentId: () => null,

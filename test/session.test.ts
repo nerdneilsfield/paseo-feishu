@@ -37,9 +37,18 @@ function agent(over: Partial<AgentSummary> & { id: string }): AgentSummary {
 
 class FakePaseo implements PaseoPort {
   ready = true;
+  observationRead = false;
+  subscriptions = 0;
+  releases = 0;
+  subscribeTimeline(): ReturnType<PaseoPort["subscribeTimeline"]> {
+    this.observationRead = true;
+    this.subscriptions++;
+    return Object.assign(() => { this.releases++; }, { ready: Promise.resolve(), subscriptionId: null, release: async () => {} });
+  }
   timelineCalls: TimelineReadOptions[] = [];
   timelineBehavior: (options: TimelineReadOptions) => Promise<TimelinePage> = async () => timelinePage([]);
   async readTimeline(_agentId: string, options: TimelineReadOptions): Promise<TimelinePage> {
+    if (this.observationRead) { this.observationRead = false; return timelinePage([]); }
     this.timelineCalls.push(options);
     return this.timelineBehavior(options);
   }
@@ -112,6 +121,7 @@ class FakeFeishu implements FeishuPort {
 }
 
 const fakeCards: CardBuilders = {
+  reply: (input) => ({ kind: "reply", ...input }),
   help: (input) => ({ kind: "help", ...input }),
   history: (input) => ({ kind: "history", ...input }),
   picker: (input) => ({ kind: "picker", ...input }) as FeishuCard,
@@ -214,7 +224,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
 
     await fx.session.handleText(text({ messageId: "m2", text: "继续检查 KCP 背压处理" }));
     expect(fx.paseo.sends).toEqual([{ agentId: "a1", text: "继续检查 KCP 背压处理" }]);
-    expect(fx.feishu.texts.at(-1)?.text).toContain("已发送（非任务完成）");
+    expect(fx.feishu.texts.at(-1)?.text).toContain("Paseo 已受理（非任务完成）");
   });
 
   it("sends to the snapshot agent even if binding changes mid-send", async () => {
@@ -460,27 +470,6 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     expect(fx.feishu.texts.at(-1)?.text).toContain("卡片更新失败");
   });
 
-  it("refresh_agents on the current-session card reports the live status, not the picker", async () => {
-    const fx = await setup([agent({ id: "a1", status: "idle", title: "Relay" })]);
-    const picker = await currentPicker(fx);
-    await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    // 当前会话卡在落盘之后才更新；等它，读到的才是卡片按钮里的 revision。
-    await vi.waitFor(() => expect(fx.feishu.updates).toHaveLength(1));
-    const st = await createFileStore(fx.storePath).load();
-    fx.paseo.agents.set("a1", agent({ id: "a1", status: "running", title: "Relay" }));
-    const res = await fx.session.handleCardAction({
-      messageId: st.binding?.pickerMessageId ?? "",
-      chatId: CHAT,
-      operatorOpenId: OWNER,
-      action: { action: "refresh_current", pickerRevision: st.binding?.pickerRevision ?? 0 },
-    });
-    expect(res.toast.type).toBe("loading");
-    await vi.waitFor(() => expect(fx.feishu.updates.length).toBeGreaterThan(1));
-    const card = fx.feishu.updates.at(-1)?.card as { kind: string; agent: AgentSummary };
-    expect(card.kind).toBe("current");
-    expect(card.agent.status).toBe("running");
-  });
-
   it("refresh returns before listAgents settles so the card callback is not held", async () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
@@ -529,7 +518,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     expect((fx.feishu.updates.at(-1)?.card as { kind: string }).kind).toBe("current");
   });
 
-  it("open_picker / refresh_agents re-list fresh and update the card; offline card when disconnected", async () => {
+  it("refresh_agents re-list fresh and update the card; offline card when disconnected", async () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     fx.paseo.agents.set("a2", agent({ id: "a2" }));
@@ -550,7 +539,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
       messageId: picker.messageId,
       chatId: CHAT,
       operatorOpenId: OWNER,
-      action: { action: "open_picker", pickerRevision: picker.revision },
+      action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
     expect(off.toast.type).toBe("loading");
     await vi.waitFor(() =>
@@ -621,8 +610,6 @@ describe("session: permissions (A07)", () => {
     title: "run tests",
     summary: "npm test",
     mappable: true,
-    allowActionId: "allow",
-    denyActionId: "deny",
   };
 
   async function boundWithPending(): Promise<Fixture> {
@@ -941,7 +928,6 @@ describe("local navigation and history", () => {
   it.each(["switch", "close"])("discards an in-flight history read on %s", async (operation) => {
     const fx = await boundFixture();
     const scope = fx.session.currentScope()!;
-    expect(Object.isFrozen(scope)).toBe(true);
     const gate = deferred<TimelinePage>();
     fx.paseo.timelineBehavior = () => gate.promise;
     const read = fx.session.handleText(text({ text: "/history" }));
@@ -1030,7 +1016,7 @@ describe("history failure and scope invariants", () => {
     expect(fx.paseo.timelineCalls).toHaveLength(2);
   });
 
-  it("restored bindings have a fresh immutable process generation", async () => {
+  it("restored bindings have a fresh process generation", async () => {
     const fx = await boundFixture();
     const old = fx.session.currentScope()!;
     await fx.session.close();
@@ -1039,7 +1025,6 @@ describe("history failure and scope invariants", () => {
     expect(scope).toMatchObject({ agentId: old.agentId, chatId: old.chatId });
     expect(scope.generation).not.toBe(old.generation);
     expect(restored.isCurrentScope(old)).toBe(false);
-    expect(Object.isFrozen(scope)).toBe(true);
     await restored.close();
   });
 
@@ -1056,4 +1041,19 @@ describe("history failure and scope invariants", () => {
     expect(JSON.stringify(await createFileStore(fx.storePath).load())).not.toContain("摘录已截断");
     expect(JSON.stringify(await createFileStore(fx.storePath).load())).not.toContain("message-1");
   });
+});
+
+
+it("failed switch releases old observation and registers the restored binding with a new scope", async () => {
+  const fx = await boundFixture();
+  const oldScope = fx.session.currentScope()!;
+  const binding = (await createFileStore(fx.storePath).load()).binding!;
+  await fx.session.handleCardAction(selectAction(fx, { messageId: binding.pickerMessageId!, revision: binding.pickerRevision }, "missing"));
+  await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("未切换"));
+  expect(fx.session.currentAgentId()).toBe("a1");
+  expect(fx.session.isCurrentScope(oldScope)).toBe(false);
+  expect(fx.paseo.subscriptions).toBe(2);
+  expect(fx.paseo.releases).toBe(1);
+  await fx.session.close();
+  expect(fx.paseo.releases).toBe(2);
 });

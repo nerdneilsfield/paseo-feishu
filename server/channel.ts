@@ -37,9 +37,7 @@ const cardActionSchema = z.discriminatedUnion("action", [
     agentId: z.string().min(1),
     pickerRevision: z.number().int(),
   }),
-  z.object({ action: z.literal("open_picker"), pickerRevision: z.number().int() }),
   z.object({ action: z.literal("refresh_agents"), pickerRevision: z.number().int() }),
-  z.object({ action: z.literal("refresh_current"), pickerRevision: z.number().int() }),
   z.object({
     action: z.literal("page_agents"),
     page: z.number().int(),
@@ -65,9 +63,6 @@ function parseCardAction(value: unknown): CardAction | null {
     } catch {
       return null;
     }
-  }
-  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
-    return null;
   }
   const parsed = cardActionSchema.safeParse(candidate);
   return parsed.success ? parsed.data : null;
@@ -126,22 +121,12 @@ export function createFeishuChannel(
 
   let unsubs: Array<() => void> = [];
 
-  function botOpenId(): string | undefined {
-    try {
-      return channel.botIdentity?.openId;
-    } catch {
-      return undefined;
-    }
-  }
-
   function toIncomingText(msg: NormalizedMessage): IncomingText | null {
     // 应用层二次校验：SDK 的 dmAllowlist 只是第一层。
-    const self = botOpenId();
     const reason = msg.chatType !== "p2p" ? "not_p2p"
       : msg.senderId !== ownerOpenId ? "sender_not_allowed"
       : msg.rawContentType !== "text" ? "unsupported_content_type"
       : msg.senderIsBot === true ? "bot_sender"
-      : self !== undefined && msg.senderId === self ? "self_message"
       : null;
     if (reason !== null) {
       logInfo("feishu.message.rejected", { messageId: msg.messageId, reason, senderId: idHint(msg.senderId), ownerId: idHint(ownerOpenId) });
@@ -242,7 +227,7 @@ export function createFeishuChannel(
       );
       logInfo("feishu.connect.started", { domain: config.feishuDomain ?? "https://open.feishu.cn", ownerId: idHint(ownerOpenId) });
       await channel.connect();
-      logInfo("feishu.connected", { botId: idHint(botOpenId()) });
+      logInfo("feishu.connected", { botId: idHint(channel.botIdentity?.openId) });
     },
 
     async stop(): Promise<void> {

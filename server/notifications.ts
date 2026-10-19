@@ -1,18 +1,20 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type {
+  BindingScope,
   NotificationDeps,
   PendingPermission,
 } from "./contracts.js";
-import { SUMMARY_LIMIT } from "./contracts.js";
+import { excerpt } from "./history.js";
+import { logError } from "./log.js";
 import { toPendingPermission } from "./paseo.js";
 
 /** 记住审批卡位置供 resolved 时更新；有上限，重启后丢失可接受（best-effort）。 */
-const approvalCards = new Map<string, { chatId: string; messageId: string }>();
+const approvalCards = new Map<string, { chatId: string; messageId: string; scope: BindingScope }>();
 const APPROVAL_CARDS_LIMIT = 500;
 
 function rememberApprovalCard(
   requestId: string,
-  location: { chatId: string; messageId: string },
+  location: { chatId: string; messageId: string; scope: BindingScope },
 ): void {
   if (approvalCards.size >= APPROVAL_CARDS_LIMIT) {
     const oldest = approvalCards.keys().next();
@@ -21,32 +23,21 @@ function rememberApprovalCard(
   approvalCards.set(requestId, location);
 }
 
-function excerptKey(agentId: string, turnId: string | null, timelineLength: number): string {
-  if (turnId) return `${agentId}:${turnId}`;
-  // turnId 为 null 时用 timeline 长度代替：同一 agent 连续两个无 turnId 的 turn
-  // 可能撞键（长度相同则后者被吞）。host 侧 turn_ended 通常带 turnId，这里只是兜底。
-  return `${agentId}:${timelineLength}`;
-}
-
 function lastAssistantText(
   timeline: readonly { type: string; text?: string }[],
 ): string | null {
-  // 只拼最后一段连续的助手分片。遇到非 assistant_message 就停，
-  // 否则工具输出之前的旧文本会被并进摘要。
+  // Hook timeline includes earlier conversation. Skip only trailing non-message
+  // items, then retain the latest contiguous assistant group, stopping at a user/tool.
+  let end = timeline.length - 1;
+  while (end >= 0 && timeline[end]?.type !== "assistant_message" && timeline[end]?.type !== "user_message") end--;
+  if (end < 0 || timeline[end]?.type !== "assistant_message") return null;
   const parts: string[] = [];
-  for (let i = timeline.length - 1; i >= 0; i--) {
+  for (let i = end; i >= 0; i--) {
     const item = timeline[i];
     if (!item || item.type !== "assistant_message" || typeof item.text !== "string") break;
     parts.push(item.text);
   }
-  if (parts.length === 0) return null;
-  const text = parts.reverse().join("");
-  return text.length > SUMMARY_LIMIT ? text.slice(0, SUMMARY_LIMIT) : text;
-}
-
-function logError(msg: string, err: unknown): void {
-  // 只记错误摘要；绝不记消息内容、权限命令全文、密码。
-  console.error(`[paseo-feishu] ${msg}:`, err instanceof Error ? err.message : err);
+  return parts.length ? excerpt(parts.reverse().join(""), 12000) : null;
 }
 
 export function registerNotifications(server: PluginServerContext, deps: NotificationDeps): void {
@@ -54,31 +45,21 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     const session = deps.session();
     if (!session) return;
     if (session.currentAgentId() !== event.agent.id) return;
-    const chatId = session.currentChatId();
-    if (!chatId) return;
-    const key = excerptKey(event.agent.id, event.turnId, event.timeline.length);
-    if (!(await session.markNotified(key))) return;
-
+    const scope = session.currentScope();
+    if (!scope || !event.turnId) return;
+    const key = `${event.agent.id}:${event.turnId}`;
+    const finish = session.liveReplies.seal(scope, event.turnId);
+    if (!finish) return;
+    if (!(await session.markNotified(key)) || !session.isCurrentScope(scope)) return;
     const title = event.agent.title ?? event.agent.id.slice(0, 8);
-    const excerpt = lastAssistantText(event.timeline);
-    let text: string;
-    switch (event.outcome.kind) {
-      case "completed":
-        text = excerpt ? `${title} · 已完成\n${excerpt}` : `${title} · 已完成`;
-        break;
-      case "failed":
-        text = excerpt
-          ? `${title} · 失败：${event.outcome.error.message}\n${excerpt}`
-          : `${title} · 失败：${event.outcome.error.message}`;
-        break;
-      case "canceled":
-        text = `${title} · 已取消：${event.outcome.reason}`;
-        break;
-    }
-    // hook 内不等待飞书网络：只做上面的轻量判断与幂等记录，发送放后台。
-    void (async () => {
-      await deps.feishu.sendText(chatId, text);
-    })().catch((err) => logError("turn_ended notify failed", err));
+    const text = lastAssistantText(event.timeline) ?? "";
+    const phase = event.outcome.kind === "completed" ? "已完成" : event.outcome.kind === "failed" ? "失败" : "已取消";
+    const rawReason = event.outcome.kind === "failed" ? event.outcome.error.message : event.outcome.kind === "canceled" ? event.outcome.reason : null;
+    // Take only the protocol string; never serialize diagnostics or unknown objects.
+    const reason = typeof rawReason === "string" ? excerpt(rawReason.replace(/[\u0000-\u001f\u007f]/g, " ").trim(), 300).replace(/\s+/g, " ") : "";
+    const reminder = `${title} · ${phase}${reason ? `：${reason}` : ""}`;
+    void finish.finish({ title, phase, reason, updatedAt: Date.now(), text, incomplete: false }, reminder)
+      .catch((err) => logError("turn_ended notify failed", err));
   });
 
   server.on("agent.permission_requested", async (event) => {
@@ -87,17 +68,21 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     if (session.currentAgentId() !== event.agent.id) return;
     const chatId = session.currentChatId();
     if (!chatId) return;
+    const scope = session.currentScope();
+    if (!scope) return;
     const permission: PendingPermission = toPendingPermission(event.agent.id, event.request);
+    session.liveReplies.waiting(scope, permission.kind === "question");
     if (!(await session.markNotified(`perm:${permission.requestId}`))) return;
 
     const agentTitle = event.agent.title ?? event.agent.id.slice(0, 8);
     void (async () => {
+      if (!session.isCurrentScope(scope)) return;
       if (permission.mappable) {
         const messageId = await deps.feishu.sendCard(
           chatId,
           deps.cards.permission({ permission, agentTitle }),
         );
-        rememberApprovalCard(permission.requestId, { chatId, messageId });
+        if (session.isCurrentScope(scope)) rememberApprovalCard(permission.requestId, { chatId, messageId, scope });
       } else {
         // 无法映射成 allow/deny 的请求不生成二选一按钮，只提示回 Paseo 处理。
         await deps.feishu.sendCard(
@@ -114,13 +99,16 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
   server.on("agent.permission_resolved", async (event) => {
     const session = deps.session();
     if (!session) return;
+    const scope = session.currentScope();
+    if (!scope || scope.agentId !== event.agent.id) return;
     // host 不去重：先记终态，返回 false 说明已处理过，直接返回。
     if (!(await session.markPermissionDecided(event.requestId, "resolved_elsewhere"))) return;
     const location = approvalCards.get(event.requestId);
     approvalCards.delete(event.requestId);
-    if (!location) return;
+    if (!location || !session.isCurrentScope(location.scope) || !session.isCurrentScope(scope)) return;
     const agentTitle = event.agent.title ?? event.agent.id.slice(0, 8);
     void (async () => {
+      if (!session.isCurrentScope(scope)) return;
       await deps.feishu.updateCard(
         location.messageId,
         deps.cards.permissionResolved({ agentTitle, outcome: "resolved_elsewhere" }),
@@ -134,8 +122,11 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     if (session.currentAgentId() !== event.agent.id) return;
     const chatId = session.currentChatId();
     if (!chatId) return;
+    const scope = session.currentScope();
+    if (!scope) return;
     const title = event.agent.title ?? event.agent.id.slice(0, 8);
     void (async () => {
+      if (!session.isCurrentScope(scope)) return;
       await deps.feishu.sendText(
         chatId,
         `${title} 已归档，当前绑定不可用，请重新选择会话。`,

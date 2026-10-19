@@ -1,13 +1,5 @@
-import type { PaseoAgentTimelineHandle } from "@getpaseo/client";
+import type { PaseoAgentTimelineHandle, PaseoAgentTimelineEvent, PaseoAgentTimelineSubscription } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-
-// 跨模块共享契约。只放类型与常量，不放业务流程。
-// 三个 writer 都只依赖本文件，不互相 import 实现。
-
-// ───────── 绑定状态 ─────────
-
-/** SWITCHING 只存在于内存，不持久化；崩溃恢复后以最后一次持久化的 Binding 为准。 */
-export type BindingState = "UNBOUND" | "BOUND" | "SWITCHING";
 
 export interface BindingScope {
   readonly generation: number;
@@ -17,6 +9,31 @@ export interface BindingScope {
 
 export type TimelineReadOptions = NonNullable<Parameters<PaseoAgentTimelineHandle["refetch"]>[0]>;
 export type TimelinePage = Awaited<ReturnType<PaseoAgentTimelineHandle["refetch"]>>;
+
+export type TimelineEvent = PaseoAgentTimelineEvent;
+export type TimelineSubscription = PaseoAgentTimelineSubscription;
+
+export interface ReplyView {
+  title: string;
+  phase: string;
+  reason?: string;
+  updatedAt: number;
+  text: string;
+  incomplete: boolean;
+}
+
+export interface LiveFinish {
+  finish(view: ReplyView, reminder: string): Promise<void>;
+}
+
+export interface LiveReplies {
+  bind(scope: BindingScope | null): void;
+  /** Failed observations retry only for explicit submissions, not startup completion. */
+  ensureReady(scope: BindingScope, retryFailed?: boolean): Promise<boolean>;
+  seal(scope: BindingScope, turnId: string | null): LiveFinish | null;
+  waiting(scope: BindingScope, question: boolean): void;
+  close(): void;
+}
 
 export interface HistoryMessage {
   seqStart: number;
@@ -41,7 +58,7 @@ export interface Binding {
 export type DeliveryState = "claimed" | "accepted" | "rejected" | "unknown";
 
 export interface NotifiedMarker {
-  /** `${agentId}:${turnId}`，没有 turnId 时用 `${agentId}:${epoch}:${seq}`。 */
+  /** `${agentId}:${turnId}` 或权限请求的去重键。 */
   key: string;
   at: number;
 }
@@ -106,8 +123,6 @@ export interface PendingPermission {
   /** 已安全截断的摘要，不含环境变量或完整命令输出。 */
   summary: string;
   mappable: boolean;
-  allowActionId?: string;
-  denyActionId?: string;
 }
 
 export type PermissionDecision = "allow" | "deny";
@@ -122,6 +137,7 @@ export interface PaseoPort {
   /** client 当前是否已连通。未连通时所有操作应被调用方拒绝，而不是排队。 */
   isReady(): boolean;
   listAgents(): Promise<AgentSummary[]>;
+  subscribeTimeline(agentId: string, handler: (event: TimelineEvent) => void): TimelineSubscription;
   readTimeline(agentId: string, options: TimelineReadOptions): Promise<TimelinePage>;
   /** 返回 null 表示不存在。内部必须先 refresh()。 */
   refreshAgent(agentId: string): Promise<AgentSummary | null>;
@@ -135,34 +151,6 @@ export interface PaseoPort {
   ): Promise<{ ok: true } | { ok: false; reason: "not_pending" | "not_connected" | "failed" }>;
   close(): Promise<void>;
 }
-
-// ───────── 通知事件（hook → notifications.ts 的输入，已脱离 SDK 类型）─────────
-
-export type TurnOutcome =
-  | { kind: "completed" }
-  | { kind: "failed"; message: string }
-  | { kind: "canceled"; reason: string };
-
-export interface TurnEndedEvent {
-  agentId: string;
-  agentTitle: string;
-  turnId: string | null;
-  outcome: TurnOutcome;
-  /** 最后一段助手文本，已截断到 summaryLimit；无文本为 null。 */
-  excerpt: string | null;
-}
-
-export interface PermissionRequestedEvent {
-  permission: PendingPermission;
-  agentTitle: string;
-}
-
-export interface PermissionResolvedEvent {
-  agentId: string;
-  requestId: string;
-}
-
-export const SUMMARY_LIMIT = 1200;
 
 // ───────── 飞书端口 ─────────
 // 只表达本项目需要的发送与更新，不做通用 Channel Adapter。
@@ -180,6 +168,7 @@ export interface FeishuPort {
 // 所有按钮 value 只带指示性字段（action / agentId / requestId / revision），服务端必须重新校验。
 
 export interface CardBuilders {
+  reply(input: ReplyView): FeishuCard;
   help(input: { commands: boolean }): FeishuCard;
   history(input: { agent: AgentSummary; scope: BindingScope; version: number; messages: HistoryMessage[]; hasOlder: boolean }): FeishuCard;
   picker(input: {
@@ -189,7 +178,7 @@ export interface CardBuilders {
     currentAgentId: string | null;
     connected: boolean;
   }): FeishuCard;
-  current(input: { agent: AgentSummary; pickerRevision: number }): FeishuCard;
+  current(input: { agent: AgentSummary }): FeishuCard;
   /** 仅当 permission.mappable 为 true 时调用；否则调用 notice。 */
   permission(input: { permission: PendingPermission; agentTitle: string }): FeishuCard;
   permissionResolved(input: {
@@ -206,10 +195,7 @@ export type CardAction =
   | { action: "navigate"; destination: "sessions" | "status" | "history" | "help" | "commands" }
   | { action: "history_page"; agentId: string; generation: number; version: number; latest: boolean }
   | { action: "select_agent"; agentId: string; pickerRevision: number }
-  | { action: "open_picker"; pickerRevision: number }
   | { action: "refresh_agents"; pickerRevision: number }
-  /** 当前会话卡上的刷新：重新 refreshAgent 并用 current 卡更新，不重渲染选择卡。 */
-  | { action: "refresh_current"; pickerRevision: number }
   | { action: "page_agents"; page: number; pickerRevision: number }
   | { action: "approve_permission"; agentId: string; requestId: string; cardRevision?: number }
   | { action: "deny_permission"; agentId: string; requestId: string; cardRevision?: number };
@@ -244,6 +230,9 @@ export interface SessionController {
   /** 同步给出即时 toast；耗时处理自行放后台，完成后用 FeishuPort.updateCard 写回。 */
   handleCardAction(evt: IncomingCardAction): Promise<CardResponse>;
   /** 供 notifications.ts 判断事件是否属于当前绑定。 */
+  liveReplies: LiveReplies;
+  /** Startup connection completion only; session remains the observation owner. */
+  resumeObservation(): void;
   currentScope(): BindingScope | null;
   isCurrentScope(scope: BindingScope): boolean;
   currentAgentId(): string | null;
@@ -258,15 +247,6 @@ export interface SessionController {
   /** 停止接收新事务并等待在途写盘完成。 */
   close(): Promise<void>;
 }
-
-// ───────── 各模块对外的装配入口（index.server.ts 按这些签名装配，不要改签名）─────────
-//
-// cards.ts         export function createCardBuilders(): CardBuilders
-// channel.ts       export function createFeishuChannel(config: Pick<PluginConfig, "feishuAppId" | "feishuAppSecret" | "ownerOpenId">): FeishuChannel
-// paseo.ts         export function createPaseoPort(config: Pick<PluginConfig, "paseoUrl" | "paseoPassword">): ConnectablePaseoPort
-// notifications.ts export function registerNotifications(server: PluginServerContext, deps: NotificationDeps): void
-// store.ts         export function createFileStore(path: string): Store
-// session.ts       export function createSession(deps: SessionDeps): Promise<SessionController>
 
 export interface FeishuChannel {
   port: FeishuPort;
