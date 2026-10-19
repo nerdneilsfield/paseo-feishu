@@ -70,3 +70,10 @@
 - P1 审批并发：同一 requestId 的「允许」「拒绝」按钮 value 不同，SDK 去重挡不住，且 decidedPermissions 在 respond 成功后才写，快速连点会向 daemon 并发提交两个决定。修：session 内 `inFlightPermissions` 同步占位，后台任务结束才释放；失败也释放以便重试。测试：fake 加 respondGate，修复前红、修复后绿。
 - P1 消息去重滞后：未绑定/切换中/命令/非文本分支没写 deliveries，重投后已绑定会被当作提示词转发（违反 A01/A10）。修：去重前置到入口，这些分支先标 rejected 再处理。测试同样先红后绿。
 - 其余 7 项 Gemini 判通过（授权、hook 不阻塞、2.5s loading、同步 cleanup、store 损坏保护、日志、无 internal/生命周期调用）；我只抽查了与上面两条相关的代码，其余沿用其结论，交给 grok 全面审阅复核。
+
+## 真实宿主加载（临时 daemon，独立 --home，端口 6799，pluginsEnabled 只开在临时 home；用完已停止删除，不动 ~/.paseo）
+- **缺陷（已修）**：宿主用 `globalThis.eval` 执行 bundle，无 CJS `__dirname`。`@larksuiteoapi/node-sdk@1.76.0` lib/index.js:138-189 在模块顶层求值 `FALLBACK_UA = buildUserAgent()` → 读 `__dirname` → 整个插件 "failed to load: __dirname is not defined"。grok 的本地打包验证用 Node `require` 加载（有 __dirname），所以漏过。修：`server/shim.ts` 在 index.server.ts 第一个 import 设置 `globalThis.__dirname`；SDK 读不到 package.json 时自己回退 "unknown"，只影响 User-Agent。
+- 修后：`paseo plugin add <目录>` 成功，build 阶段 `npm ci --omit=dev` 通过，`status=running`，日志 "Plugin ready"。无飞书凭据时按设计只打印 `missing required env` 并空载。
+- 教训：打包后用 Node require 验证 ≠ 宿主 eval 验证。以后"能加载"的结论只认真实 `paseo plugin add`。
+- 仍未验证：凭据齐全后的飞书连接、hook 真实触发（turn_ended/permission）、真实 send、卡片 2.0 渲染与回传。
+- 飞书官方文档（web 检索确认）：2.0 不再支持 `tag:"action"` 容器，按钮直接放 elements，交互用 `behaviors:[{type:"callback",value}]`，回调须 3 秒内响应。cards.ts 现用 column_set 包按钮、behaviors 回传，符合；column_set 内放按钮是否渲染良好需实机。
