@@ -76,7 +76,6 @@ The [reference](docs/en/reference.md) documents every variable, command, card, a
 
 - [Setup](docs/en/setup.md): create the Feishu/Lark app, install the plugin, and send your first message.
 - [Reference](docs/en/reference.md): configuration, chat commands, notifications, state file, and known limits.
-- [Product spec](docs/design/SPEC.md) and [technical design](docs/design/DESIGN.md): behavior, acceptance scenarios, and architecture. Both are written in Chinese.
 - Report problems in the [issue tracker](https://github.com/nerdneilsfield/paseo-feishu/issues).
 
 ## Development

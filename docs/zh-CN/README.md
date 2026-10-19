@@ -78,7 +78,6 @@ paseo plugin add github:nerdneilsfield/paseo-feishu
 
 - [设置](./setup.md)：创建飞书应用、安装插件、发出第一条消息。
 - [参考](./reference.md)：配置、聊天命令、通知、状态文件、已知限制。
-- [产品规格](../design/SPEC.md)和[技术设计](../design/DESIGN.md)：行为约定、验收场景与架构。
 - 问题请到 [issue](https://github.com/nerdneilsfield/paseo-feishu/issues) 反馈。
 
 ## 开发

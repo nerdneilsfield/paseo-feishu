@@ -99,14 +99,14 @@ Notifications go only to the currently bound agent. With no bound session, the p
 
 | Event | Condition | What you receive |
 | --- | --- | --- |
-| An agent turn ends | The agent is the bound agent | `<title> · 已完成` (completed), `<title> · 失败：<error>` (failed), or `<title> · 已取消：<reason>` (canceled). An excerpt follows when the agent produced assistant text. |
+| An agent turn ends | Its ID matches the currently observed turn | The reply card shows the final result, followed by one short completion, failure or cancellation notification. |
 | An agent requests permission | The agent is the bound agent | An approval card, or a notice card that says to handle the request in Paseo. |
 | A permission request is resolved elsewhere | An approval card for it exists in the chat | The approval card changes to "已在 Paseo 处理" (handled in Paseo). |
 | An agent is archived | The agent is the bound agent | A text message that the binding is no longer usable and you must select a session again. |
 
 `<title>` is the agent's title. If the agent has none, it is the first 8 characters of the agent ID.
 
-**Excerpt.** The excerpt joins the consecutive assistant message chunks at the end of the turn and truncates the result to 1200 characters. It stops at the first non-assistant timeline entry, such as a tool call, when reading backward.
+**Live replies.** The plugin updates one card from public assistant messages, at most once per second. The final card shows up to 12,000 characters. If the card fails, a text notification carries the result. Older turns and end events without a matching turn ID are ignored; the plugin does not retain retired cards or recover late end events.
 
 **Approval cards and notice cards.** The plugin builds an approval card with buttons only when the permission kind is a tool call and its actions are exactly one allow and one deny. Every other request gets a notice card that tells you to handle it in Paseo, with no buttons. Examples are free-text questions, plan reviews, mode changes, and requests with more than two actions.
 
@@ -169,7 +169,7 @@ To investigate a missing reply, send `/status` in private chat, then rerun `pase
 
 - At startup, the plugin starts the Paseo connection without waiting for it, loads the state file, and then starts the Feishu/Lark long connection. A Paseo connection failure is only logged, and the Feishu/Lark connection still starts. The SDK reconnects to Paseo automatically, and until it connects, messages get "Paseo 未连接，消息未发送".
 - If loading the state file fails, including when the file is corrupt, the Feishu/Lark connection does not start and the plugin stays idle.
-- When the plugin stops, it closes the Feishu/Lark connection, the session handler, and the Paseo connection in parallel. The stop budget is about 4 seconds, after which the host terminates the plugin process.
+- When the plugin stops, it closes the Feishu/Lark connection, the session handler, and the Paseo connection in parallel. The host enforces its stop deadline.
 - The plugin never creates, archives, detaches, or stops an agent. Stopping the plugin does not affect running agents.
 
 ## Known limits
