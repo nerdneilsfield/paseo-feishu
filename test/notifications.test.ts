@@ -197,8 +197,8 @@ describe("registerNotifications", () => {
         { type: "assistant_message", text: "结尾" },
       ]),
     );
-    const last = t.feishu.sendText.mock.calls.at(-1);
-    const body = String(last?.[1] ?? "");
+    const calls = t.feishu.sendText.mock.calls as unknown as Array<[string, string]>;
+    const body = calls.at(-1)?.[1] ?? "";
     expect(body).toContain("后半结尾");
     expect(body).not.toContain("前半");
     expect(body).not.toContain("secret command output");
