@@ -154,4 +154,5 @@ node_modules/
 package-lock.json
 
 # do not commit coutwerweight 
-.cw
+.cw/
+.superpowers/
