@@ -40,30 +40,43 @@ function button(
     tag: "button",
     text: { tag: "plain_text", content },
     type,
+    width: "fill",
     behaviors: [{ type: "callback", value }],
   };
 }
 
-function actionRow(buttons: Array<Record<string, unknown>>): Record<string, unknown> {
-  const columns = buttons.length > 2 ? [buttons] : buttons.map(btn => [btn]);
-  return {
-    tag: "column_set",
-    flex_mode: "none",
-    columns: columns.map((elements) => ({
-      tag: "column",
-      width: "auto",
-      elements,
-    })),
-  };
+function actionRows(buttons: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < buttons.length; i += 2) {
+    rows.push({
+      tag: "column_set",
+      flex_mode: "none",
+      columns: buttons.slice(i, i + 2).map(btn => ({
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        elements: [btn],
+      })),
+    });
+  }
+  return rows;
 }
 
-function navigation(): Record<string, unknown> {
-  return actionRow([
-    button("选择会话", { action: "navigate", destination: "sessions" }),
-    button("状态", { action: "navigate", destination: "status" }),
-    button("历史", { action: "navigate", destination: "history" }),
-    button("命令说明", { action: "navigate", destination: "commands" }),
-  ]);
+type NavigationDestination = "sessions" | "status" | "history" | "help" | "commands";
+
+/** 本地导航行。不挂当前卡自己的入口：点了只会再发一张同样的卡。命令说明卡以「帮助」返回。 */
+function navigation(current: NavigationDestination): Array<Record<string, unknown>> {
+  const entries: Array<[string, NavigationDestination]> = [
+    ["选择会话", "sessions"],
+    ["状态", "status"],
+    ["历史", "history"],
+    [current === "commands" ? "帮助" : "命令说明", current === "commands" ? "help" : "commands"],
+  ];
+  return actionRows(
+    entries
+      .filter(([, destination]) => destination !== current)
+      .map(([label, destination]) => button(label, { action: "navigate", destination })),
+  );
 }
 
 function oneLine(s: string): string {
@@ -119,7 +132,7 @@ export function createCardBuilders(): CardBuilders {
             "`/history more`：更早历史",
           ].map(md) : []),
           md("选择下方操作。绑定后，普通文字会发送到当前会话。"),
-          navigation(),
+          ...navigation(commands ? "commands" : "help"),
         ] },
       };
     },
@@ -132,11 +145,11 @@ export function createCardBuilders(): CardBuilders {
       }
       if (!messages.length) elements.push(md("本次扫描范围没有用户或助手消息。"));
       const value = { action: "history_page" };
-      elements.push(actionRow([
+      elements.push(...actionRows([
         ...(hasOlder ? [button("更早", { latest: false, ...value })] : []),
         button("回到最新", { latest: true, ...value }),
       ]));
-      elements.push(navigation());
+      elements.push(...navigation("history"));
       return { schema: SCHEMA, header: { title: { tag: "plain_text", content: "Paseo · 会话历史（摘录）" }, template: "grey" }, body: { elements } };
     },
     picker(input) {
@@ -161,7 +174,7 @@ export function createCardBuilders(): CardBuilders {
         const isCurrent = a.id === currentAgentId;
         elements.push(md(agentLine(a)));
         elements.push(
-          actionRow([
+          ...actionRows([
             button(
               isCurrent ? "继续此会话" : "切换到此会话",
               { action: "select_agent", agentId: a.id, pickerRevision },
@@ -178,9 +191,9 @@ export function createCardBuilders(): CardBuilders {
         pager.push(button("下一页", { action: "page_agents", page: safePage + 1, pickerRevision }));
       }
       pager.push(button("刷新", { action: "refresh_agents", pickerRevision }));
-      elements.push(actionRow(pager));
-      elements.push(navigation());
       if (totalPages > 1) elements.push(md(`第 ${safePage + 1}/${totalPages} 页`));
+      elements.push(...actionRows(pager));
+      elements.push(...navigation("sessions"));
 
       return {
         schema: SCHEMA,
@@ -204,7 +217,7 @@ export function createCardBuilders(): CardBuilders {
           elements: [
             md(agentLine(agent)),
             md("后续消息将发送到此会话。"),
-            navigation(),
+            ...navigation("status"),
           ],
         },
       };
@@ -244,7 +257,7 @@ export function createCardBuilders(): CardBuilders {
             // 只展示 summary：不带环境变量、完整输出或 Paseo 内部动作 ID。
             md(permission.summary),
             md(`请求 ${shortId}`),
-            actionRow([
+            ...actionRows([
               button("允许", approveValue, "primary"),
               button("拒绝", denyValue, "danger"),
             ]),
