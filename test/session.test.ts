@@ -463,10 +463,34 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
       operatorOpenId: OWNER,
       action: { action: "refresh_current", pickerRevision: st.binding?.pickerRevision ?? 0 },
     });
-    expect(res.toast.type).toBe("success");
+    expect(res.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.feishu.updates.length).toBeGreaterThan(1));
     const card = fx.feishu.updates.at(-1)?.card as { kind: string; agent: AgentSummary };
     expect(card.kind).toBe("current");
     expect(card.agent.status).toBe("running");
+  });
+
+  it("refresh returns before listAgents settles so the card callback is not held", async () => {
+    const fx = await setup([agent({ id: "a1" })]);
+    const picker = await currentPicker(fx);
+    let release!: (agents: AgentSummary[]) => void;
+    fx.paseo.listAgents = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const pending = fx.session.handleCardAction({
+      messageId: picker.messageId,
+      chatId: CHAT,
+      operatorOpenId: OWNER,
+      action: { action: "refresh_agents", pickerRevision: picker.revision },
+    });
+    const raced = await Promise.race([
+      pending.then((res) => res.toast.type),
+      new Promise((resolve) => setTimeout(() => resolve("held"), 200)),
+    ]);
+    expect(raced).toBe("loading");
+    release([...fx.paseo.agents.values()]);
+    await pending;
   });
 
   it("open_picker / refresh_agents re-list fresh and update the card; offline card when disconnected", async () => {
@@ -479,7 +503,8 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
       operatorOpenId: OWNER,
       action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
-    expect(res.toast.type).toBe("success");
+    expect(res.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.feishu.updates.length).toBeGreaterThan(0));
     expect(fx.paseo.listCalls).toBeGreaterThan(0);
     const card = fx.feishu.updates.at(-1)?.card as unknown as { agents: AgentSummary[] };
     expect(card.agents.map((a) => a.id)).toContain("a2");
@@ -491,7 +516,12 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
       operatorOpenId: OWNER,
       action: { action: "open_picker", pickerRevision: picker.revision },
     });
-    expect(off.toast.type).toBe("success");
+    expect(off.toast.type).toBe("loading");
+    await vi.waitFor(() =>
+      expect(
+        (fx.feishu.updates.at(-1)?.card as unknown as { connected: boolean }).connected,
+      ).toBe(false),
+    );
     const offCard = fx.feishu.updates.at(-1)?.card as unknown as { connected: boolean };
     expect(offCard.connected).toBe(false);
   });

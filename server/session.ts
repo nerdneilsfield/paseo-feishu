@@ -318,34 +318,44 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (!binding || binding.pickerMessageId !== evt.messageId || binding.pickerRevision !== rev) {
       return toast("warning", "卡片已过期，请重新打开");
     }
-    const connected = paseo.isReady();
-    let agents: AgentSummary[] = [];
-    let ok = connected;
-    if (connected) {
-      try {
-        agents = await paseo.listAgents();
-      } catch (err) {
-        logErr("listAgents", err);
-        ok = false;
-        agents = [];
-      }
-    }
-    try {
-      await feishu.updateCard(
-        evt.messageId,
-        cards.picker({
-          agents,
-          page,
-          pickerRevision: binding.pickerRevision,
-          currentAgentId: binding.agentId,
-          connected: ok,
-        }),
-      );
-    } catch (err) {
-      logErr(`updateCard ${short(evt.messageId)}`, err);
-      return toast("error", "卡片更新失败");
-    }
-    return toast("success", "已刷新");
+    // 列表查询和卡片更新都是网络调用。卡片回调必须在 3 秒内返回，
+    // 而且 chatQueue 要等 handler 结束才放行下一条，所以这里只做同步校验。
+    const chatId = binding.chatId;
+    const pickerRevision = binding.pickerRevision;
+    const currentAgentId = binding.agentId;
+    runBackground(
+      (async () => {
+        const connected = paseo.isReady();
+        let agents: AgentSummary[] = [];
+        let ok = connected;
+        if (connected) {
+          try {
+            agents = await paseo.listAgents();
+          } catch (err) {
+            logErr("listAgents", err);
+            ok = false;
+            agents = [];
+          }
+        }
+        try {
+          await feishu.updateCard(
+            evt.messageId,
+            cards.picker({
+              agents,
+              page,
+              pickerRevision,
+              currentAgentId,
+              connected: ok,
+            }),
+          );
+        } catch (err) {
+          logErr(`updateCard ${short(evt.messageId)}`, err);
+          await safeSendText(chatId, "刷新失败：卡片更新失败");
+        }
+      })(),
+      "refresh_picker",
+    );
+    return toast("loading", "正在刷新…");
   }
 
   async function handleCurrentRefresh(evt: IncomingCardAction, rev: number): Promise<CardResponse> {
@@ -355,26 +365,36 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     }
     if (!binding.agentId) return toast("info", "尚未选择会话");
     if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
-    let summary: AgentSummary | null;
-    try {
-      summary = await paseo.refreshAgent(binding.agentId);
-    } catch (err) {
-      logErr(`refresh ${short(binding.agentId)}`, err);
-      return toast("error", "刷新失败");
-    }
-    if (!summary || summary.archived) {
-      return toast("warning", "当前会话不可用，请重新选择");
-    }
-    try {
-      await feishu.updateCard(
-        evt.messageId,
-        cards.current({ agent: summary, pickerRevision: binding.pickerRevision }),
-      );
-    } catch (err) {
-      logErr(`updateCard ${short(evt.messageId)}`, err);
-      return toast("error", "卡片更新失败");
-    }
-    return toast("success", "已刷新");
+    const agentId = binding.agentId;
+    const pickerRevision = binding.pickerRevision;
+    const chatId = binding.chatId;
+    runBackground(
+      (async () => {
+        let summary: AgentSummary | null;
+        try {
+          summary = await paseo.refreshAgent(agentId);
+        } catch (err) {
+          logErr(`refresh ${short(agentId)}`, err);
+          await safeSendText(chatId, "刷新失败");
+          return;
+        }
+        if (!summary || summary.archived) {
+          await safeSendText(chatId, "当前会话不可用，请重新选择");
+          return;
+        }
+        try {
+          await feishu.updateCard(
+            evt.messageId,
+            cards.current({ agent: summary, pickerRevision }),
+          );
+        } catch (err) {
+          logErr(`updateCard ${short(evt.messageId)}`, err);
+          await safeSendText(chatId, "刷新失败：卡片更新失败");
+        }
+      })(),
+      "refresh_current",
+    );
+    return toast("loading", "正在刷新…");
   }
 
   async function handlePermission(
