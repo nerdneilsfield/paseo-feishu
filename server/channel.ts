@@ -36,6 +36,7 @@ const cardActionSchema = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("open_picker"), pickerRevision: z.number().int() }),
   z.object({ action: z.literal("refresh_agents"), pickerRevision: z.number().int() }),
+  z.object({ action: z.literal("refresh_current"), pickerRevision: z.number().int() }),
   z.object({
     action: z.literal("page_agents"),
     page: z.number().int(),

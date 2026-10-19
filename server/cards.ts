@@ -158,7 +158,8 @@ export function createCardBuilders(): CardBuilders {
             md(agentLine(agent)),
             actionRow([
               button("切换会话", { action: "open_picker", pickerRevision }),
-              button("刷新状态", { action: "refresh_agents", pickerRevision }),
+              // 当前会话卡的刷新不能走选择卡的 refresh_agents，否则会被重渲染成列表。
+              button("刷新状态", { action: "refresh_current", pickerRevision }),
             ]),
           ],
         },

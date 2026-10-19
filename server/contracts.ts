@@ -185,6 +185,8 @@ export type CardAction =
   | { action: "select_agent"; agentId: string; pickerRevision: number }
   | { action: "open_picker"; pickerRevision: number }
   | { action: "refresh_agents"; pickerRevision: number }
+  /** 当前会话卡上的刷新：重新 refreshAgent 并用 current 卡更新，不重渲染选择卡。 */
+  | { action: "refresh_current"; pickerRevision: number }
   | { action: "page_agents"; page: number; pickerRevision: number }
   | { action: "approve_permission"; agentId: string; requestId: string; cardRevision?: number }
   | { action: "deny_permission"; agentId: string; requestId: string; cardRevision?: number };

@@ -348,6 +348,35 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     return toast("success", "已刷新");
   }
 
+  async function handleCurrentRefresh(evt: IncomingCardAction, rev: number): Promise<CardResponse> {
+    const binding = state.binding;
+    if (!binding || binding.pickerMessageId !== evt.messageId || binding.pickerRevision !== rev) {
+      return toast("warning", "卡片已过期，请重新打开");
+    }
+    if (!binding.agentId) return toast("info", "尚未选择会话");
+    if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
+    let summary: AgentSummary | null;
+    try {
+      summary = await paseo.refreshAgent(binding.agentId);
+    } catch (err) {
+      logErr(`refresh ${short(binding.agentId)}`, err);
+      return toast("error", "刷新失败");
+    }
+    if (!summary || summary.archived) {
+      return toast("warning", "当前会话不可用，请重新选择");
+    }
+    try {
+      await feishu.updateCard(
+        evt.messageId,
+        cards.current({ agent: summary, pickerRevision: binding.pickerRevision }),
+      );
+    } catch (err) {
+      logErr(`updateCard ${short(evt.messageId)}`, err);
+      return toast("error", "卡片更新失败");
+    }
+    return toast("success", "已刷新");
+  }
+
   async function handlePermission(
     evt: IncomingCardAction,
     agentId: string,
@@ -448,6 +477,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         return handlePickerRefresh(evt, action.pickerRevision, 0);
       case "refresh_agents":
         return handlePickerRefresh(evt, action.pickerRevision, 0);
+      case "refresh_current":
+        return handleCurrentRefresh(evt, action.pickerRevision);
       case "page_agents":
         return handlePickerRefresh(evt, action.pickerRevision, action.page);
       case "approve_permission":

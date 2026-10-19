@@ -461,7 +461,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
       messageId: st.binding?.pickerMessageId ?? "",
       chatId: CHAT,
       operatorOpenId: OWNER,
-      action: { action: "refresh_agents", pickerRevision: st.binding?.pickerRevision ?? 0 },
+      action: { action: "refresh_current", pickerRevision: st.binding?.pickerRevision ?? 0 },
     });
     expect(res.toast.type).toBe("success");
     const card = fx.feishu.updates.at(-1)?.card as { kind: string; agent: AgentSummary };
