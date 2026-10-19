@@ -152,3 +152,6 @@ vite.config.ts.timestamp-*
 node_modules/
 .cw/meter.jsonl
 package-lock.json
+
+# do not commit coutwerweight 
+.cw
