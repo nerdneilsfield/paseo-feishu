@@ -130,8 +130,9 @@ Paseo host 只提供 `@getpaseo/plugin/*` 与 `zod`；`@larksuite/channel`、`@g
 | action | 数据 | 效果 |
 | --- | --- | --- |
 | `select_agent` | `agentId`、`pickerRevision` | 校验/绑定已有会话 |
-| `open_picker` | `pickerRevision` | 新建当前有效选择卡 |
-| `refresh_agents` | `pickerRevision` | 查询并重绘列表 |
+| `open_picker` | `pickerRevision` | 原地重绘选择卡 |
+| `refresh_agents` | `pickerRevision` | 在选择卡上查询并重绘列表 |
+| `refresh_current` | `pickerRevision` | 在当前会话卡上重新读取绑定 Agent 并原地更新 |
 | `page_agents` | `page`、`pickerRevision` | 展示指定页 |
 | `approve_permission` | `agentId`、`requestId` | 审核后允许 |
 | `deny_permission` | `agentId`、`requestId` | 审核后拒绝 |
