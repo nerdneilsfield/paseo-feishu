@@ -1,0 +1,74 @@
+import type { BindingScope, HistoryMessage, PaseoPort, TimelinePage } from "./contracts.js";
+
+/** Only displayable excerpts are retained; a fetch adds at most 50 to a <10-item buffer. */
+export interface HistoryPosition {
+  epoch: string | null;
+  cursor: TimelinePage["startCursor"];
+  hasOlder: boolean;
+  boundary: number;
+  buffer: HistoryMessage[];
+}
+
+export class HistoryReadError extends Error {
+  constructor(message: string, readonly invalidCursor = false) {
+    super(message);
+  }
+}
+
+export function excerpt(text: string, limit: number): string {
+  const marker = "\n[摘录已截断，请回 Paseo 查看完整内容]";
+  return text.length > limit ? text.slice(0, Math.max(0, limit - marker.length)) + marker : text;
+}
+
+/** Builds a candidate; the caller commits it only after the card has been sent. */
+export async function readHistory(
+  paseo: PaseoPort,
+  scope: BindingScope,
+  previous: HistoryPosition | null,
+  isCurrent: () => boolean,
+): Promise<{ position: HistoryPosition; messages: HistoryMessage[] } | null> {
+  const position: HistoryPosition = previous
+    ? { ...previous, buffer: [...previous.buffer] }
+    : { epoch: null, cursor: null, hasOlder: true, boundary: Infinity, buffer: [] };
+  for (let count = 0; position.buffer.length < 10 && position.hasOlder && count < 5; count++) {
+    if (!isCurrent()) return null;
+    if (!paseo.isReady()) throw new HistoryReadError("Paseo 未连接，历史未读取。");
+    const page = await paseo.readTimeline(scope.agentId, {
+      direction: position.epoch === null ? "tail" : "before",
+      ...(position.cursor ? { cursor: position.cursor } : {}),
+      projection: "projected",
+      limit: 50,
+    });
+    if (!isCurrent()) return null;
+    if (page.error) throw new HistoryReadError("历史读取失败，请稍后重试。");
+    if (page.staleCursor || page.reset || (position.epoch !== null && position.epoch !== page.epoch)) {
+      throw new HistoryReadError("历史游标已过期，请重新发送 /history。", true);
+    }
+    if (page.gap) throw new HistoryReadError("历史存在缺口，请回 Paseo 查看，并重新发送 /history。", true);
+    const entries = [...page.entries].sort((a, b) => b.seqStart - a.seqStart || b.seqEnd - a.seqEnd);
+    let boundary = position.boundary;
+    for (const entry of entries) {
+      // before may include its cursor. Sequence ranges, never text or message IDs, set the boundary.
+      if (entry.seqEnd >= boundary) continue;
+      boundary = entry.seqStart;
+      const item = entry.item;
+      if (item.type !== "user_message" && item.type !== "assistant_message") continue;
+      position.buffer.push({
+        seqStart: entry.seqStart,
+        seqEnd: entry.seqEnd,
+        role: item.type === "user_message" ? "user" : "assistant",
+        timestamp: entry.timestamp,
+        text: excerpt(item.text, 1200),
+      });
+    }
+    if (page.hasOlder && (!page.startCursor || (position.cursor?.epoch === page.startCursor.epoch && position.cursor.seq === page.startCursor.seq))) {
+      throw new HistoryReadError("历史分页未前进，请重新发送 /history。", true);
+    }
+    position.boundary = boundary;
+    position.epoch = page.epoch;
+    position.cursor = page.startCursor;
+    position.hasOlder = page.hasOlder;
+  }
+  const messages = position.buffer.splice(0, 10).reverse();
+  return { position, messages };
+}

@@ -36,9 +36,14 @@ Any text outside this table is not a command. While a session is bound, the plug
 | Input | Effect |
 | --- | --- |
 | `/sessions` | Sends the session picker card. |
-| `/status` | Replies with the first 8 characters of the bound agent's ID and the binding revision. |
+| `/status` | Shows the bound session title, short directory and current state. |
+| `/help` | Opens local navigation, including when unbound or Paseo is offline. |
+| `/history` | Shows the latest ten user/assistant excerpts and resets the paging position. |
+| `/history more` | Shows earlier excerpts; first run `/history`. |
 
-A command must be the whole message. Surrounding whitespace is ignored. Commands are case-sensitive.
+Commands are case-sensitive; surrounding whitespace is ignored. `/sessions` and `/status` must be the whole message. The exact first word `/help` or `/history` is always handled locally, including invalid arguments (which return usage). `/helpful`, other provider commands such as `/compact`, and ordinary Chinese text keep the normal forwarding behavior.
+
+History uses projected SDK pages, filtering out reasoning and tools. Each command scans at most five pages of 50 entries, displays up to ten messages in sequence order, and buffers undisplayed excerpts in memory. Each excerpt is at most 1,200 characters; card text is limited to 12,000 with explicit truncation guidance to Paseo. A successful card send advances the position; failed reads or sends leave it unchanged. Switching, restarting or an invalid timeline cursor resets it. Read errors and gaps are reported separately from empty history. The menu configuration is described in [Setup](./setup.md#optional-bot-menu).
 
 ## Message handling
 
@@ -48,7 +53,7 @@ For each incoming message, the plugin applies the following rules in order and s
 | --- | --- |
 | The sender is not `FEISHU_OWNER_OPEN_ID`, the chat is not private, or the sender is a bot | Dropped without a reply. |
 | The message is not text | Replies "仅支持文本消息，其他类型暂不支持。" (only text is supported). |
-| The message is `/sessions` or `/status` | Runs the command. |
+| The message is a local command listed above (including invalid `/help` or `/history` arguments) | Runs local navigation or replies with usage, without an agent turn. |
 | A session switch is in progress | Replies "切换中：此消息未发送，请切换后重发。" (switching; message not sent). |
 | No session is bound | Sends the picker card. The message is not forwarded. |
 | Paseo is not connected | Replies "Paseo 未连接，消息未发送" (Paseo not connected; message not sent). The message is not queued. |
@@ -70,11 +75,13 @@ After a message is sent to the agent, the bot replies with one of four results:
 | Card | Title | Buttons |
 | --- | --- | --- |
 | Session picker | Paseo · 选择会话 | One **切换到此会话** (switch to this session) per agent, shown as **继续此会话** (continue this session) for the bound agent; **上一页** (previous) and **下一页** (next); **刷新** (refresh). |
-| Current session | Paseo · 当前会话 | **切换会话** (switch session); **刷新状态** (refresh status). |
+| Current session | Paseo · 当前会话 | **选择会话** (choose session), **状态** (status), **历史** (history), **命令说明** (commands). |
+| Help | Paseo · 控制台 | The same four local navigation buttons. |
+| History | Paseo · 会话历史（摘录） | **更早** (earlier, when available), **回到最新** (latest), and local navigation. |
 | Approval request | Paseo · 审批请求 | **允许** (allow) and **拒绝** (deny). |
 | Approval handled | Paseo · 审批已处理 | None. |
 
-The picker shows 5 agents per page. The bound agent comes first. The others are ordered from the most recent to the least recent activity. An agent's status appears as one of 运行中 (running), 空闲 (idle), 异常 (error), 可恢复 (recoverable, the Paseo status `closed`), 启动中 (starting), or 未知 (unknown).
+The picker shows 5 agents per page. The bound agent comes first. The others are ordered from the most recent to the least recent activity. An agent's status appears as one of 运行中 (running), 空闲 (idle), 异常 (error), 已关闭 (closed), 启动中 (starting), or 未知 (unknown).
 
 A button carries only an action name, an agent ID, a request ID, and a revision number. The plugin revalidates all of them when you click.
 

@@ -30,6 +30,8 @@ const FAILED_RESPONSE: CardResponse = {
 
 // value 里的 cardRevision 等多余字段会被 zod 默认 strip，只留下契约字段。
 const cardActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("navigate"), destination: z.enum(["sessions", "status", "history", "help", "commands"]) }),
+  z.object({ action: z.literal("history_page"), agentId: z.string().min(1), generation: z.number().int(), version: z.number().int(), latest: z.boolean() }),
   z.object({
     action: z.literal("select_agent"),
     agentId: z.string().min(1),

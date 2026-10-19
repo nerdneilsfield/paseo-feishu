@@ -161,6 +161,11 @@ export function createPaseoPort(
       }
     },
 
+    async readTimeline(agentId, options) {
+      ensureReady();
+      return client.agents.ref(agentId).timeline.refetch(options);
+    },
+
     async listAgents(): Promise<AgentSummary[]> {
       ensureReady();
       const out: AgentSummary[] = [];

@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   AgentSummary,
+  TimelinePage,
+  TimelineReadOptions,
   CardBuilders,
   FeishuCard,
   FeishuPort,
@@ -35,6 +37,12 @@ function agent(over: Partial<AgentSummary> & { id: string }): AgentSummary {
 
 class FakePaseo implements PaseoPort {
   ready = true;
+  timelineCalls: TimelineReadOptions[] = [];
+  timelineBehavior: (options: TimelineReadOptions) => Promise<TimelinePage> = async () => timelinePage([]);
+  async readTimeline(_agentId: string, options: TimelineReadOptions): Promise<TimelinePage> {
+    this.timelineCalls.push(options);
+    return this.timelineBehavior(options);
+  }
   agents = new Map<string, AgentSummary>();
   sends: Array<{ agentId: string; text: string }> = [];
   sendQueue: SendResult[] = [];
@@ -104,6 +112,8 @@ class FakeFeishu implements FeishuPort {
 }
 
 const fakeCards: CardBuilders = {
+  help: (input) => ({ kind: "help", ...input }),
+  history: (input) => ({ kind: "history", ...input }),
   picker: (input) => ({ kind: "picker", ...input }) as FeishuCard,
   current: (input) => ({ kind: "current", agentId: input.agent.id, ...input }) as FeishuCard,
   permission: (input) => ({ kind: "permission", ...input }) as FeishuCard,
@@ -308,9 +318,10 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
     await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
     await fx.session.handleText(text({ messageId: "c3", text: "/status" }));
-    const statusText = fx.feishu.texts.at(-1)?.text ?? "";
-    expect(statusText).toContain("当前绑定");
-    expect(statusText).not.toContain("a1-very-secret-full-id");
+    const statusCard = fx.feishu.cards.at(-1)!.card;
+    expect(statusCard.kind).toBe("current");
+    expect(statusCard.agent).toMatchObject({ title: "title-a1", cwdLabel: "proj", status: "idle" });
+    expect(statusCard).not.toHaveProperty("bindingRevision");
   });
 
   it("non-text content from owner is refused without forwarding", async () => {
@@ -759,5 +770,290 @@ describe("session: persistence + lifecycle (A12)", () => {
     await fx.session.handleText(text({ messageId: "m-late", text: "late" }));
     expect(fx.paseo.sends).toHaveLength(0);
     expect(await fx.session.markNotified("x")).toBe(false);
+  });
+});
+
+function timelineEntry(seq: number, type: "user_message" | "assistant_message" | "reasoning" = "assistant_message"): TimelinePage["entries"][number] {
+  return { provider: "codex", item: { type, text: `message-${seq}` }, timestamp: "2026-10-19T10:00:00Z", seqStart: seq, seqEnd: seq, sourceSeqRanges: [{ startSeq: seq, endSeq: seq }], collapsed: [] };
+}
+
+function timelinePage(entries: TimelinePage["entries"], over: Partial<TimelinePage> = {}): TimelinePage {
+  const seqs = entries.map((e) => e.seqStart);
+  return { requestId: "read", agentId: "a1", agent: null, direction: "tail", projection: "projected", epoch: "e1", reset: false, staleCursor: false, gap: false, window: { minSeq: 1, maxSeq: 500, nextSeq: 501 }, startCursor: seqs.length ? { epoch: "e1", seq: Math.min(...seqs) } : null, endCursor: seqs.length ? { epoch: "e1", seq: Math.max(...seqs) } : null, hasOlder: false, hasNewer: false, entries, error: null, ...over };
+}
+
+async function boundFixture(): Promise<Fixture> {
+  const fx = await setup([agent({ id: "a1" }), agent({ id: "a2" })]);
+  const picker = await currentPicker(fx);
+  await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
+  await vi.waitFor(() => expect(fx.feishu.updates).toHaveLength(1));
+  return fx;
+}
+
+function historyMessages(fx: Fixture): Array<{ text: string; seqStart: number }> {
+  return fx.feishu.cards.at(-1)!.card.messages as Array<{ text: string; seqStart: number }>;
+}
+
+function historyAction(fx: Fixture, latest = false): IncomingCardAction {
+  const card = fx.feishu.cards.at(-1)!.card;
+  const scope = fx.session.currentScope()!;
+  return { messageId: `picker-${fx.feishu.seq}`, chatId: CHAT, operatorOpenId: OWNER, action: { action: "history_page", agentId: scope.agentId, generation: scope.generation, version: card.version as number, latest } };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe("local navigation and history", () => {
+  it("help is offline/unbound, deduplicated and invalid arguments stay local", async () => {
+    const fx = await setup();
+    fx.paseo.ready = false;
+    const help = text({ messageId: "help", text: " /help " });
+    await fx.session.handleText(help);
+    await fx.session.handleText(help);
+    expect(fx.feishu.cards).toHaveLength(1);
+    expect(fx.feishu.cards[0]!.card.kind).toBe("help");
+    for (const command of ["/help extra", "/history extra", "/history more extra", "/history", "/history more"]) await fx.session.handleText(text({ text: command }));
+    expect(fx.paseo.sends).toHaveLength(0);
+    expect(fx.paseo.timelineCalls).toHaveLength(0);
+    expect(fx.feishu.texts.map((t) => t.text).join("\n")).toContain("用法");
+    await fx.session.handleText(text({ senderId: "other", text: "/help" }));
+    await fx.session.handleText(text({ chatType: "group", text: "/help" }));
+    expect(fx.feishu.cards).toHaveLength(1);
+  });
+
+  it("matches exact first words and preserves provider commands and ordinary text", async () => {
+    const fx = await boundFixture();
+    for (const command of ["/helpful", "/historymore", "/compact", "帮助"]) await fx.session.handleText(text({ text: command }));
+    expect(fx.paseo.sends.map((s) => s.text)).toEqual(["/helpful", "/historymore", "/compact", "帮助"]);
+    for (const command of ["/help bad", "/history bad", "/help", "/history"]) await fx.session.handleText(text({ text: command }));
+    expect(fx.paseo.sends).toHaveLength(4);
+  });
+
+  it("help buttons share navigation without manufacturing deliveries", async () => {
+    const fx = await setup();
+    await fx.session.handleText(text({ messageId: "help", text: "/help" }));
+    await fx.session.handleCardAction({ messageId: "picker-1", chatId: CHAT, operatorOpenId: OWNER, action: { action: "navigate", destination: "commands" } });
+    await vi.waitFor(() => expect(fx.feishu.cards).toHaveLength(2));
+    expect(fx.feishu.cards[1]!.card).toMatchObject({ kind: "help", commands: true });
+    expect(Object.keys((await createFileStore(fx.storePath).load()).deliveries)).toEqual(["help"]);
+    expect(fx.paseo.sends).toHaveLength(0);
+    const invalid = await fx.session.handleCardAction({ messageId: "unknown", chatId: CHAT, operatorOpenId: OWNER, action: { action: "navigate", destination: "sessions" } });
+    expect(invalid.toast.type).toBe("warning");
+  });
+
+  it("keeps buffered records, sorts by seq and deduplicates inclusive page boundaries", async () => {
+    const fx = await boundFixture();
+    fx.paseo.timelineBehavior = async (options) => options.direction === "tail"
+      ? timelinePage(Array.from({ length: 50 }, (_, i) => timelineEntry(i + 51)), { hasOlder: true })
+      : timelinePage(Array.from({ length: 50 }, (_, i) => timelineEntry(i + 2)));
+    const seen: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      await fx.session.handleText(text({ text: i === 0 ? "/history" : "/history more" }));
+      const seqs = historyMessages(fx).map((m) => m.seqStart);
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+      seen.push(...seqs);
+    }
+    expect(new Set(seen).size).toBe(99);
+    expect([...seen].sort((a, b) => a - b)).toEqual(Array.from({ length: 99 }, (_, i) => i + 2));
+    expect(fx.paseo.timelineCalls).toHaveLength(2);
+    expect(fx.paseo.timelineCalls[1]).toEqual({ direction: "before", cursor: { epoch: "e1", seq: 51 }, projection: "projected", limit: 50 });
+    expect(fx.paseo.sends).toHaveLength(0);
+  });
+
+  it("caps tool-dense scanning at five pages and can continue beyond that range", async () => {
+    const fx = await boundFixture();
+    let index = 0;
+    fx.paseo.timelineBehavior = async () => {
+      const seq = 1000 - ++index * 50;
+      return timelinePage(Array.from({ length: 50 }, (_, i) => timelineEntry(seq + i, index <= 5 ? "reasoning" : "user_message")), { hasOlder: true });
+    };
+    await fx.session.handleText(text({ text: "/history" }));
+    expect(fx.paseo.timelineCalls).toHaveLength(5);
+    expect(historyMessages(fx)).toEqual([]);
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.paseo.timelineCalls).toHaveLength(6);
+    expect(historyMessages(fx)).toHaveLength(10);
+    expect(historyMessages(fx).map((m) => m.text)).not.toContain("reasoning");
+  });
+
+  it("failed sends leave the previous buffer and card position intact", async () => {
+    const fx = await boundFixture();
+    fx.paseo.timelineBehavior = async () => timelinePage(Array.from({ length: 25 }, (_, i) => timelineEntry(i + 1)));
+    await fx.session.handleText(text({ text: "/history" }));
+    const action = historyAction(fx);
+    const send = vi.spyOn(fx.feishu, "sendCard").mockRejectedValueOnce(new Error("failed"));
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("位置未推进");
+    expect((await fx.session.handleCardAction(action)).toast.type).toBe("loading");
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(historyMessages(fx).map((m) => m.seqStart)).toEqual([6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
+    expect(fx.paseo.timelineCalls).toHaveLength(1);
+    expect((await fx.session.handleCardAction(action)).toast.type).toBe("warning");
+  });
+
+  it("serializes overlapping history commands, and latest resets to the tail", async () => {
+    const fx = await boundFixture();
+    const gate = deferred<TimelinePage>();
+    fx.paseo.timelineBehavior = () => gate.promise;
+    const first = fx.session.handleText(text({ text: "/history" }));
+    await vi.waitFor(() => expect(fx.paseo.timelineCalls).toHaveLength(1));
+    const second = fx.session.handleText(text({ text: "/history more" }));
+    gate.resolve(timelinePage(Array.from({ length: 25 }, (_, i) => timelineEntry(i + 1))));
+    await Promise.all([first, second]);
+    expect(historyMessages(fx).map((m) => m.seqStart)).toEqual([6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    await fx.session.handleCardAction(historyAction(fx, true));
+    await vi.waitFor(() => expect(fx.paseo.timelineCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(historyMessages(fx)[0]!.seqStart).toBe(16));
+    expect(fx.paseo.timelineCalls[1]!.direction).toBe("tail");
+  });
+
+  it.each(["error", "staleCursor", "gap", "reset"] as const)("reports SDK %s separately from empty history", async (field) => {
+    const fx = await boundFixture();
+    fx.paseo.timelineBehavior = async () => timelinePage([], { [field]: field === "error" ? "remote error" : true });
+    const count = fx.feishu.cards.length;
+    await fx.session.handleText(text({ text: "/history" }));
+    expect(fx.feishu.cards).toHaveLength(count);
+    expect(fx.feishu.texts.at(-1)!.text).toMatch(/失败|过期|缺口/);
+    expect(fx.feishu.texts.at(-1)!.text).not.toContain("没有用户");
+  });
+
+  it("more without position, offline and archived sessions have explicit local responses", async () => {
+    const fx = await boundFixture();
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("先发送 /history");
+    fx.paseo.ready = false;
+    await fx.session.handleText(text({ text: "/history" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("未连接");
+    fx.paseo.ready = true;
+    fx.paseo.agents.set("a1", agent({ id: "a1", archived: true }));
+    await fx.session.handleText(text({ text: "/history" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("已归档");
+    fx.paseo.agents.delete("a1");
+    await fx.session.handleText(text({ text: "/history" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("不存在");
+    expect(fx.paseo.timelineCalls).toHaveLength(0);
+    expect(fx.paseo.sends).toHaveLength(0);
+  });
+
+  it.each(["switch", "close"])("discards an in-flight history read on %s", async (operation) => {
+    const fx = await boundFixture();
+    const scope = fx.session.currentScope()!;
+    expect(Object.isFrozen(scope)).toBe(true);
+    const gate = deferred<TimelinePage>();
+    fx.paseo.timelineBehavior = () => gate.promise;
+    const read = fx.session.handleText(text({ text: "/history" }));
+    await vi.waitFor(() => expect(fx.paseo.timelineCalls).toHaveLength(1));
+    const count = fx.feishu.cards.length;
+    if (operation === "switch") {
+      await fx.session.handleText(text({ text: "/sessions" }));
+      const card = fx.feishu.cards.at(-1)!.card;
+      await fx.session.handleCardAction(selectAction(fx, { messageId: `picker-${fx.feishu.seq}`, revision: card.pickerRevision as number }, "a2"));
+      await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+    } else await fx.session.close();
+    expect(fx.session.isCurrentScope(scope)).toBe(false);
+    gate.resolve(timelinePage([timelineEntry(1)]));
+    await read;
+    expect(fx.feishu.cards.filter((c) => c.card.kind === "history")).toHaveLength(0);
+    expect(fx.feishu.cards.length).toBe(count + (operation === "switch" ? 1 : 0));
+  });
+
+  it("validates history card id, agent, generation and version", async () => {
+    const fx = await boundFixture();
+    await fx.session.handleText(text({ text: "/history" }));
+    const valid = historyAction(fx);
+    for (const changes of [{ agentId: "a2" }, { generation: -1 }, { version: -1 }]) {
+      const result = await fx.session.handleCardAction({ ...valid, action: { ...valid.action, ...changes } as IncomingCardAction["action"] });
+      expect(result.toast.type).toBe("warning");
+    }
+    expect((await fx.session.handleCardAction({ ...valid, messageId: "wrong" })).toast.type).toBe("warning");
+    expect(fx.paseo.timelineCalls).toHaveLength(1);
+  });
+
+  it("does not publish a stale status refresh or navigation picker after switching", async () => {
+    const fx = await boundFixture();
+    const gate = deferred<AgentSummary | null>();
+    fx.paseo.refreshBehavior = (id) => id === "a1" ? gate.promise : Promise.resolve(fx.paseo.agents.get(id) ?? null);
+    const status = fx.session.handleText(text({ text: "/status" }));
+    await vi.waitFor(() => expect(fx.paseo.refreshCalls.filter((id) => id === "a1").length).toBeGreaterThan(1));
+    const listGate = deferred<AgentSummary[]>();
+    const list = vi.spyOn(fx.paseo, "listAgents").mockReturnValueOnce(listGate.promise);
+    const picker = fx.session.handleText(text({ text: "/sessions" }));
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    const st = await createFileStore(fx.storePath).load();
+    await fx.session.handleCardAction(selectAction(fx, { messageId: st.binding!.pickerMessageId!, revision: st.binding!.pickerRevision }, "a2"));
+    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+    const count = fx.feishu.cards.length;
+    gate.resolve(agent({ id: "a1", title: "stale title" }));
+    listGate.resolve([agent({ id: "a1" })]);
+    await Promise.all([status, picker]);
+    expect(fx.feishu.cards).toHaveLength(count);
+    expect(fx.session.currentScope()!.agentId).toBe("a2");
+  });
+});
+
+describe("history failure and scope invariants", () => {
+  it("a failed earlier-page read preserves the SDK cursor for retry", async () => {
+    const fx = await boundFixture();
+    let reads = 0;
+    fx.paseo.timelineBehavior = async () => {
+      reads++;
+      if (reads === 2) throw new Error("private transcript must not reach the response");
+      return reads === 1
+        ? timelinePage(Array.from({ length: 10 }, (_, i) => timelineEntry(i + 11)), { hasOlder: true })
+        : timelinePage(Array.from({ length: 11 }, (_, i) => timelineEntry(i + 1)));
+    };
+    await fx.session.handleText(text({ text: "/history" }));
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("位置未推进");
+    expect(fx.feishu.texts.at(-1)!.text).not.toContain("private transcript");
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.paseo.timelineCalls[1]).toEqual(fx.paseo.timelineCalls[2]);
+    expect(historyMessages(fx).map((m) => m.seqStart)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("an expired cursor resets the position and old history card becomes unusable", async () => {
+    const fx = await boundFixture();
+    let reads = 0;
+    fx.paseo.timelineBehavior = async () => ++reads === 1
+      ? timelinePage(Array.from({ length: 10 }, (_, i) => timelineEntry(i + 11)), { hasOlder: true })
+      : timelinePage([], { staleCursor: true });
+    await fx.session.handleText(text({ text: "/history" }));
+    const old = historyAction(fx);
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("过期");
+    expect((await fx.session.handleCardAction(old)).toast.type).toBe("warning");
+    await fx.session.handleText(text({ text: "/history more" }));
+    expect(fx.feishu.texts.at(-1)!.text).toContain("先发送 /history");
+    expect(fx.paseo.timelineCalls).toHaveLength(2);
+  });
+
+  it("restored bindings have a fresh immutable process generation", async () => {
+    const fx = await boundFixture();
+    const old = fx.session.currentScope()!;
+    await fx.session.close();
+    const restored = await reopen(fx);
+    const scope = restored.currentScope()!;
+    expect(scope).toMatchObject({ agentId: old.agentId, chatId: old.chatId });
+    expect(scope.generation).not.toBe(old.generation);
+    expect(restored.isCurrentScope(old)).toBe(false);
+    expect(Object.isFrozen(scope)).toBe(true);
+    await restored.close();
+  });
+
+  it("stores only bounded display excerpts and filters reasoning before card rendering", async () => {
+    const fx = await boundFixture();
+    const long = timelineEntry(2);
+    if (long.item.type === "assistant_message") long.item.text = "a".repeat(5000);
+    fx.paseo.timelineBehavior = async () => timelinePage([timelineEntry(1, "user_message"), long, timelineEntry(3, "reasoning")]);
+    await fx.session.handleText(text({ text: "/history" }));
+    const messages = historyMessages(fx);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]!.text.length).toBeLessThanOrEqual(1200);
+    expect(messages[1]!.text).toContain("摘录已截断，请回 Paseo");
+    expect(JSON.stringify(await createFileStore(fx.storePath).load())).not.toContain("摘录已截断");
+    expect(JSON.stringify(await createFileStore(fx.storePath).load())).not.toContain("message-1");
   });
 });

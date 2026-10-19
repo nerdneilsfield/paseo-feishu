@@ -69,6 +69,8 @@ function makeSession(over: Partial<SessionController> = {}): SessionController {
   return {
     handleText: vi.fn().mockResolvedValue(undefined),
     handleCardAction: vi.fn().mockResolvedValue({ toast: { type: "success", content: "ok" } }),
+    currentScope: () => null,
+    isCurrentScope: () => false,
     currentAgentId: () => null,
     currentChatId: () => null,
     markNotified: vi.fn().mockResolvedValue(true),
@@ -250,6 +252,20 @@ describe("message 监听", () => {
 });
 
 describe("cardAction 监听", () => {
+  test.each([
+    { action: "navigate", destination: "history" },
+    { action: "history_page", agentId: "a1", generation: 1, version: 2, latest: false },
+    { action: "history_page", agentId: "a1", generation: 1, version: 2, latest: true },
+  ])("parses local navigation values: %j", async (action) => {
+    const { feishu, fake } = setup();
+    const session = makeSession();
+    await feishu.start(session);
+    await fake.handlers["cardAction"]?.(cardEvt(action));
+    expect(session.handleCardAction).toHaveBeenCalledWith(expect.objectContaining({ action }));
+    expect(session.handleText).not.toHaveBeenCalled();
+    await feishu.stop();
+  });
+
   test("合法点击返回 session 的 toast", async () => {
     const { feishu, fake } = setup();
     const session = makeSession({

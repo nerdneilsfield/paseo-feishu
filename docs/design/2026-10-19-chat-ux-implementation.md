@@ -13,7 +13,7 @@
 - 保持单 owner、私聊、消息去重、审批重新核查、不重发未知提交、不持久化/记录正文。
 - 不新增依赖、环境变量开关、后台轮询或持久化格式。只使用 SDK 现有操作。
 - 不创建/停止 agent，不引入远程终端或新执行引擎。
-- 原生菜单用开放平台“发送文字”映射 `/sessions`、`/history`、`/help`；文档说明配置步骤，不增加绕过安全管线的 raw 菜单事件。
+- 原生菜单用开放平台“发送文字”发送精确 `/sessions`、`/history`、`/help`。若后台直接发送菜单名称，名称就填命令本身；不声称中文标签可独立映射。中文快捷入口由帮助卡提供，不增加 raw 菜单事件。
 - 问题只用安全标题/描述显示“需要回答，请回 Paseo 回答”。协议缺少标准答案结构，不猜 `updatedInput`。
 - 授权不声称未经协议保证的“一次性”范围；保留真实动作的安全语义，拒绝用普通按钮。
 
@@ -47,18 +47,20 @@ PaseoClient 公开接口没有连接状态订阅；不得访问 SDK 私有属性
 
 ### T1：本地导航、历史卡与菜单说明
 
-状态：pending。依赖：无。验收：U1/U2/U3。
+状态：done。依赖：无。验收：U1/U2/U3。
+
+证据：主代理复跑 typecheck、全套130 tests、diff check 均通过；fresh task reviewer 判定 Spec/Quality 通过。
 
 文件：`server/contracts.ts`、`server/paseo.ts`、`server/session.ts`、`server/cards.ts`、`server/channel.ts`；现有 `test/` 中相关测试；`docs/zh-CN/` 与 `docs/en/` 设置/参考文档。
 
-- [ ] 增加 SDK timeline 读取端口和 scope；精确首词识别 `/help`、`/history`，非法参数也本地返回；保留其他 provider 命令转发。
-- [ ] 帮助/状态/会话卡共用本地导航逻辑；按钮不模拟用户消息。历史展示最近、更早、回到最新，按候选状态提交分页进度。
-- [ ] 用现有 Vitest 路径验证命令不转发、分页/竞态，运行 `rtk npm run typecheck`、`rtk test npx vitest run --silent`。
-- [ ] 主代理检查 diff，task reviewer 审查规格与实际缺陷；修复后本地提交 `feat: add local Feishu navigation and session history`。
+- [x] 增加 SDK timeline 读取端口和 scope；精确首词识别 `/help`、`/history`，非法参数也本地返回；保留其他 provider 命令转发。
+- [x] 帮助/状态/会话卡共用本地导航逻辑；按钮不模拟用户消息。历史展示最近、更早、回到最新，按候选状态提交分页进度。
+- [x] 用现有 Vitest 路径验证命令不转发、分页/竞态，运行 `rtk npm run typecheck`、`rtk test npx vitest run --silent`。
+- [x] 主代理检查 diff，task reviewer 审查规格与实际缺陷；修复后本地提交 `feat: add local Feishu navigation and session history`。
 
 ### T2：动态回复生命周期与完成提醒
 
-状态：pending。依赖：T1。验收：U4/U5。
+状态：in_progress。依赖：T1。验收：U4/U5。
 
 文件：新增 `server/live-replies.ts`，修改 `server/contracts.ts`、`server/paseo.ts`、`server/session.ts`、`server/notifications.ts`、`server/cards.ts`、`index.server.ts`；现有相关测试及必要的 live 时序测试。
 
@@ -71,11 +73,11 @@ PaseoClient 公开接口没有连接状态订阅；不得访问 SDK 私有属性
 
 状态：pending。依赖：T2。验收：U6/U7。
 
-文件：`server/paseo.ts`、`server/session.ts`、`server/cards.ts`、`server/notifications.ts` 与相关测试；README、`docs/en/`、`docs/zh-CN/` 及旧设计状态。
+文件：`server/paseo.ts`、`server/session.ts`、`server/cards.ts`、`server/notifications.ts`、`paseo-plugin.json` 与相关测试；README、`docs/en/`、`docs/zh-CN/` 及旧设计状态。
 
 - [ ] 重新验证 pending 动作映射（tool、唯一 allow/deny、有效且不同 ID）；refresh 错误不当作已处理；已处理旧卡收起按钮并说明真实状态。
 - [ ] 工具授权与问题/其他操作区分，拒绝不使用 danger，标题/摘要/按钮适合手机，不增加无协议支持的答案提交。
-- [ ] 更新功能、菜单外部配置、环境继承时机、动态更新/提醒和已验证范围；全套测试/类型检查、task reviewer 通过后本地提交。
+- [ ] 更新功能、菜单外部配置、环境继承时机、动态更新/提醒和已验证范围；采用保守的最低已核验 Paseo 版本 `>=0.11.4`（当前 CLI/SDK 均为0.11.4），同步 setup 中版本说明；全套测试/类型检查、task reviewer 通过后本地提交。
 
 ## 监督与收尾
 
@@ -83,4 +85,4 @@ PaseoClient 公开接口没有连接状态订阅；不得访问 SDK 私有属性
 
 最终由 fresh final reviewer 检查整体实现和跨任务问题。类型检查与全套测试通过后，核对已安装插件 source path，若为托管副本则同步本轮命名文件后只重载该插件。不得复制状态或凭据。日志和 running 状态只能证明加载，不能冒充飞书手机真机验收；用户未实际操作的手机通知/视觉结果在最终说明。
 
-执行记录：baseline 7 个测试文件、102 项测试通过；explorer 与 planner 均只读完成。下一步 T1。
+执行记录：baseline 7 个测试文件、102 项测试通过；explorer 与 planner 均只读完成。T1完成并通过独立审查；下一步 T2。

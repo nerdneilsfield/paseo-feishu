@@ -1,3 +1,4 @@
+import type { PaseoAgentTimelineHandle } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 // 跨模块共享契约。只放类型与常量，不放业务流程。
@@ -7,6 +8,23 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 /** SWITCHING 只存在于内存，不持久化；崩溃恢复后以最后一次持久化的 Binding 为准。 */
 export type BindingState = "UNBOUND" | "BOUND" | "SWITCHING";
+
+export interface BindingScope {
+  readonly generation: number;
+  readonly agentId: string;
+  readonly chatId: string;
+}
+
+export type TimelineReadOptions = NonNullable<Parameters<PaseoAgentTimelineHandle["refetch"]>[0]>;
+export type TimelinePage = Awaited<ReturnType<PaseoAgentTimelineHandle["refetch"]>>;
+
+export interface HistoryMessage {
+  seqStart: number;
+  seqEnd: number;
+  role: "user" | "assistant";
+  timestamp: string;
+  text: string;
+}
 
 export interface Binding {
   chatId: string;
@@ -104,6 +122,7 @@ export interface PaseoPort {
   /** client 当前是否已连通。未连通时所有操作应被调用方拒绝，而不是排队。 */
   isReady(): boolean;
   listAgents(): Promise<AgentSummary[]>;
+  readTimeline(agentId: string, options: TimelineReadOptions): Promise<TimelinePage>;
   /** 返回 null 表示不存在。内部必须先 refresh()。 */
   refreshAgent(agentId: string): Promise<AgentSummary | null>;
   send(agentId: string, text: string): Promise<SendResult>;
@@ -161,6 +180,8 @@ export interface FeishuPort {
 // 所有按钮 value 只带指示性字段（action / agentId / requestId / revision），服务端必须重新校验。
 
 export interface CardBuilders {
+  help(input: { commands: boolean }): FeishuCard;
+  history(input: { agent: AgentSummary; scope: BindingScope; version: number; messages: HistoryMessage[]; hasOlder: boolean }): FeishuCard;
   picker(input: {
     agents: AgentSummary[];
     page: number;
@@ -182,6 +203,8 @@ export interface CardBuilders {
 // value 里的 agentId / requestId / revision 只是待校验的指示，不是信任凭据。
 
 export type CardAction =
+  | { action: "navigate"; destination: "sessions" | "status" | "history" | "help" | "commands" }
+  | { action: "history_page"; agentId: string; generation: number; version: number; latest: boolean }
   | { action: "select_agent"; agentId: string; pickerRevision: number }
   | { action: "open_picker"; pickerRevision: number }
   | { action: "refresh_agents"; pickerRevision: number }
@@ -221,6 +244,8 @@ export interface SessionController {
   /** 同步给出即时 toast；耗时处理自行放后台，完成后用 FeishuPort.updateCard 写回。 */
   handleCardAction(evt: IncomingCardAction): Promise<CardResponse>;
   /** 供 notifications.ts 判断事件是否属于当前绑定。 */
+  currentScope(): BindingScope | null;
+  isCurrentScope(scope: BindingScope): boolean;
   currentAgentId(): string | null;
   /** 当前绑定对应的私聊 chatId；未绑定为 null。 */
   currentChatId(): string | null;

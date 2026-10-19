@@ -126,12 +126,28 @@ Permission, event, and callback changes take effect only after you publish a new
 
 If no card arrives, see [Troubleshooting](#troubleshooting).
 
+## Optional bot menu
+
+In the Feishu/Lark developer console, configure three bot menu items. Use the exact command as the **menu name** and choose **Send text message** as the action:
+
+| Menu name | Action |
+| --- | --- |
+| `/sessions` | Send text message |
+| `/history` | Send text message |
+| `/help` | Send text message |
+
+Some console versions send the menu name itself and do not provide a separate message-content field. Do not depend on a Chinese label such as “会话” sending `/sessions`. If your console offers a separate text field, configure it according to the actual UI, keeping the command text exact. The `/help` card provides Chinese navigation buttons; ordinary Chinese messages remain prompts. Save and publish the app version as required by the console. The plugin does not change these settings or handle raw menu events; menu text follows the normal private-chat authorization and deduplication path.
+
+See the [Pairlet menu configuration notes](https://github.com/heypandax/pairlet/blob/main/docs/FEISHU-BOT-MENU.md) for the menu-name behavior reported on a real device.
+
 ## Daily use
 
 - **Send a prompt:** while a session is bound, any plain text message goes to the agent as a prompt.
-- **Switch session:** select **切换会话** on the current-session card, or send `/sessions`.
-- **Check the binding:** send `/status`.
-- **Refresh:** select **刷新** or **刷新状态** on a card.
+- **Switch session:** select **选择会话** on the current-session card, or send `/sessions`.
+- **Help:** send `/help` for local navigation, even without a bound session or a Paseo connection.
+- **Check the binding:** send `/status` for the session title, short directory and current state.
+- **Read history:** send `/history` for the latest ten user/assistant excerpts, then `/history more` for earlier messages. History positions last only until switching or plugin restart; use Paseo for full text.
+- **Refresh:** select **刷新** on the picker or **状态** on a navigation card.
 - **Approve or deny:** when the agent asks for permission, a "Paseo · 审批请求" card arrives. Select **允许** or **拒绝**. If you already handled the request in Paseo, the card says so and does nothing.
 
 Only text messages are supported. Other message types get the reply "仅支持文本消息，其他类型暂不支持。"

@@ -277,3 +277,45 @@ describe("审批卡", () => {
     expect(collectMarkdown(e)).toContain("Paseo");
   });
 });
+
+
+describe("local navigation cards", () => {
+  test("help has four local navigation buttons and commands explain forwarding", () => {
+    const help = builders.help({ commands: false });
+    expect(collectButtons(help).map(callbackValue)).toEqual([
+      { action: "navigate", destination: "sessions" },
+      { action: "navigate", destination: "status" },
+      { action: "navigate", destination: "history" },
+      { action: "navigate", destination: "commands" },
+    ]);
+    const commands = collectMarkdown(builders.help({ commands: true }));
+    for (const command of ["/help", "/sessions", "/status", "/history", "/history more"]) expect(commands).toContain(command);
+    expect(commands).toContain("普通文字");
+  });
+
+  test("current binding and picker use neutral hierarchy and real state", () => {
+    const current = builders.current({ agent: agent({ id: "a1", title: "Relay", cwdLabel: "work/relay", status: "running" }), pickerRevision: 22 });
+    expect(collectMarkdown(current)).toContain("Relay");
+    expect(collectMarkdown(current)).toContain("work/relay");
+    expect(collectMarkdown(current)).toContain("运行中");
+    expect(collectMarkdown(current)).toContain("不代表任务完成");
+    expect(JSON.stringify(current)).not.toContain("bindingRevision");
+    expect(current.header).toMatchObject({ template: "grey" });
+    const picker = builders.picker({ agents: [agent({ id: "a1" })], page: 0, pickerRevision: 1, currentAgentId: "a1", connected: true });
+    expect(collectButtons(picker).every((b) => b.type === "default")).toBe(true);
+  });
+
+  test("history retains all ten excerpts within the card text budget with explicit truncation", () => {
+    const scope = { agentId: "a1", chatId: "chat", generation: 2 };
+    const card = builders.history({ agent: agent({ id: "a1" }), scope, version: 3, hasOlder: true, messages: Array.from({ length: 10 }, (_, i) => ({ seqStart: i, seqEnd: i, role: i % 2 ? "assistant" as const : "user" as const, timestamp: "2026-10-19T10:00:00Z", text: "长".repeat(1400) })) });
+    const md = collectMarkdown(card);
+    expect(md.length).toBeLessThanOrEqual(12000);
+    expect(md.match(/摘录已截断/g)).toHaveLength(10);
+    expect(md.match(/2026-10-19T10:00:00Z/g)).toHaveLength(10);
+    expect(md).toContain("Paseo 查看完整内容");
+    expect(collectButtons(card).map(callbackValue)).toEqual(expect.arrayContaining([
+      { action: "history_page", agentId: "a1", generation: 2, version: 3, latest: false },
+      { action: "history_page", agentId: "a1", generation: 2, version: 3, latest: true },
+    ]));
+  });
+});

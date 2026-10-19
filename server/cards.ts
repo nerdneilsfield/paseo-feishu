@@ -1,3 +1,4 @@
+import { excerpt } from "./history.js";
 import type {
   AgentStatus,
   AgentSummary,
@@ -19,7 +20,7 @@ const STATUS_TEXT: Record<AgentStatus, string> = {
   running: "运行中",
   idle: "空闲",
   error: "异常",
-  closed: "可恢复",
+  closed: "已关闭",
   initializing: "启动中",
   unknown: "未知",
 };
@@ -54,6 +55,15 @@ function actionRow(buttons: Array<Record<string, unknown>>): Record<string, unkn
       elements: [btn],
     })),
   };
+}
+
+function navigation(): Record<string, unknown> {
+  return actionRow([
+    button("选择会话", { action: "navigate", destination: "sessions" }),
+    button("状态", { action: "navigate", destination: "status" }),
+    button("历史", { action: "navigate", destination: "history" }),
+    button("命令说明", { action: "navigate", destination: "commands" }),
+  ]);
 }
 
 function displayTitle(a: Pick<AgentSummary, "id" | "title">): string {
@@ -93,6 +103,34 @@ function agentLine(a: AgentSummary): string {
 
 export function createCardBuilders(): CardBuilders {
   return {
+    help({ commands }) {
+      return {
+        schema: SCHEMA,
+        header: { title: { tag: "plain_text", content: commands ? "Paseo · 命令说明" : "Paseo · 控制台" }, template: "grey" },
+        body: { elements: [
+          md(commands ? "/help：打开控制台\n/sessions：选择会话\n/status：查看状态\n/history：最近历史\n/history more：更早历史\n绑定后普通文字会发送给当前 Agent。" : "/help 控制台 · /sessions 选择会话 · /status 状态\n/history 最近历史 · /history more 更早历史\n绑定后普通文字会发送给当前 Agent。"),
+          navigation(),
+        ] },
+      };
+    },
+    history({ agent, scope, version, messages, hasOlder }) {
+      const heading = excerpt(agentLine(agent), 500);
+      const elements = [md(heading)];
+      // Reserve space for role/time labels and navigation; retain all ten excerpts.
+      const budget = Math.max(0, Math.floor((11500 - heading.length) / Math.max(1, messages.length)));
+      for (const message of messages) {
+        const label = `**${message.role === "user" ? "用户" : "助手"} · ${message.timestamp}**\n`;
+        elements.push(md(label + excerpt(message.text, Math.min(1200, Math.max(30, budget - label.length)))));
+      }
+      if (!messages.length) elements.push(md("本次扫描范围没有用户或助手消息。"));
+      const value = { action: "history_page", agentId: scope.agentId, generation: scope.generation, version };
+      elements.push(actionRow([
+        ...(hasOlder ? [button("更早", { latest: false, ...value })] : []),
+        button("回到最新", { latest: true, ...value }),
+      ]));
+      elements.push(navigation());
+      return { schema: SCHEMA, header: { title: { tag: "plain_text", content: "Paseo · 会话历史（摘录）" }, template: "grey" }, body: { elements } };
+    },
     picker(input) {
       const { agents, page, pickerRevision, currentAgentId, connected } = input;
       const sorted = sortAgents(agents, currentAgentId);
@@ -119,7 +157,7 @@ export function createCardBuilders(): CardBuilders {
             button(
               isCurrent ? "继续此会话" : "切换到此会话",
               { action: "select_agent", agentId: a.id, pickerRevision },
-              isCurrent ? "primary" : "default",
+              "default",
             ),
           ]),
         );
@@ -133,34 +171,31 @@ export function createCardBuilders(): CardBuilders {
       }
       pager.push(button("刷新", { action: "refresh_agents", pickerRevision }));
       elements.push(actionRow(pager));
+      elements.push(navigation());
       if (totalPages > 1) elements.push(md(`第 ${safePage + 1}/${totalPages} 页`));
 
       return {
         schema: SCHEMA,
         header: {
           title: { tag: "plain_text", content: "Paseo · 选择会话" },
-          template: connected ? "blue" : "orange",
+          template: connected ? "grey" : "orange",
         },
         body: { elements },
       };
     },
 
     current(input) {
-      const { agent, pickerRevision } = input;
+      const { agent } = input;
       return {
         schema: SCHEMA,
         header: {
           title: { tag: "plain_text", content: "Paseo · 当前会话" },
-          template: "green",
+          template: "grey",
         },
         body: {
           elements: [
-            md(agentLine(agent)),
-            actionRow([
-              button("切换会话", { action: "open_picker", pickerRevision }),
-              // 当前会话卡的刷新不能走选择卡的 refresh_agents，否则会被重渲染成列表。
-              button("刷新状态", { action: "refresh_current", pickerRevision }),
-            ]),
+            md(`当前绑定（不代表任务完成）\n${agentLine(agent)}`),
+            navigation(),
           ],
         },
       };
