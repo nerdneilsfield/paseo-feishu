@@ -92,7 +92,7 @@ export default function contribute(server: PluginServerContext): () => void {
     }
     session = created;
     if (paseo.isReady()) created.resumeObservation();
-    logInfo("startup.session.ready", { agentId: idHint(created.currentAgentId() ?? undefined) });
+    logInfo("startup.session.ready", { agentId: idHint(created.currentScope()?.agentId) });
     await channel.start(created);
     logInfo("startup.ready", { paseoConnected: paseo.isReady() });
   })().catch((err) => logError("startup.failed", err));

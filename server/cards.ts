@@ -66,24 +66,15 @@ function navigation(): Record<string, unknown> {
   ]);
 }
 
-function displayTitle(a: Pick<AgentSummary, "id" | "title">): string {
-  const t = a.title.trim();
-  return t === "" ? `会话 ${a.id.slice(0, 8)}` : t;
-}
-
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
 function formatTime(ts: number): string {
-  if (!Number.isFinite(ts) || ts <= 0) return "—";
+  if (ts <= 0) return "—";
   const d = new Date(ts);
   const p = (n: number): string => String(n).padStart(2, "0");
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function statusText(s: AgentStatus): string {
-  return STATUS_TEXT[s];
 }
 
 /** 当前绑定置顶，其余按 lastActivityAt 倒序、相同时间按 id 排序。 */
@@ -98,7 +89,7 @@ function sortAgents(agents: AgentSummary[], currentAgentId: string | null): Agen
 }
 
 function agentLine(a: AgentSummary): string {
-  return `**${oneLine(displayTitle(a))}**\n${oneLine(a.provider)} · ${oneLine(a.cwdLabel)} · ${statusText(a.status)} · ${formatTime(a.lastActivityAt)}`;
+  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${oneLine(a.cwdLabel)} · ${STATUS_TEXT[a.status]} · ${formatTime(a.lastActivityAt)}`;
 }
 
 export function createCardBuilders(): CardBuilders {
@@ -109,8 +100,8 @@ export function createCardBuilders(): CardBuilders {
         header: { title: { tag: "plain_text", content: `Paseo · ${input.phase}` }, template: "grey" },
         body: { elements: [
           md(`**${oneLine(input.title).slice(0, 200)}** · ${input.phase} · 最近事件 ${formatTime(input.updatedAt)}`),
-          ...(input.reason ? [md(`原因：${excerpt(input.reason, 300)}`)] : []),
-          md(excerpt(input.text || "暂无公开助手内容", 12000)),
+          ...(input.reason ? [md(`原因：${input.reason}`)] : []),
+          md(input.text || "暂无公开助手内容"),
           ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
         ] },
       };
@@ -125,17 +116,15 @@ export function createCardBuilders(): CardBuilders {
         ] },
       };
     },
-    history({ agent, scope, version, messages, hasOlder }) {
+    history({ agent, messages, hasOlder }) {
       const heading = excerpt(agentLine(agent), 500);
       const elements = [md(heading)];
-      // Reserve space for role/time labels and navigation; retain all ten excerpts.
-      const budget = Math.max(0, Math.floor((11500 - heading.length) / Math.max(1, messages.length)));
       for (const message of messages) {
         const label = `**${message.role === "user" ? "用户" : "助手"} · ${message.timestamp}**\n`;
-        elements.push(md(label + excerpt(message.text, Math.min(1200, Math.max(30, budget - label.length)))));
+        elements.push(md(label + message.text));
       }
       if (!messages.length) elements.push(md("本次扫描范围没有用户或助手消息。"));
-      const value = { action: "history_page", agentId: scope.agentId, generation: scope.generation, version };
+      const value = { action: "history_page" };
       elements.push(actionRow([
         ...(hasOlder ? [button("更早", { latest: false, ...value })] : []),
         button("回到最新", { latest: true, ...value }),
@@ -147,7 +136,7 @@ export function createCardBuilders(): CardBuilders {
       const { agents, page, pickerRevision, currentAgentId, connected } = input;
       const sorted = sortAgents(agents, currentAgentId);
       const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-      const safePage = Math.min(Math.max(0, Math.floor(page)), totalPages - 1);
+      const safePage = Math.min(Math.max(0, page), totalPages - 1);
       const items = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
       const elements: Array<Record<string, unknown>> = [];
@@ -156,7 +145,7 @@ export function createCardBuilders(): CardBuilders {
       );
       if (currentAgentId !== null) {
         const cur = sorted.find((a) => a.id === currentAgentId);
-        if (cur !== undefined) elements.push(md(`当前会话：${oneLine(displayTitle(cur))}`));
+        if (cur !== undefined) elements.push(md(`当前会话：${oneLine(cur.title)}`));
       }
       if (items.length === 0) {
         elements.push(md("目前没有可用的已有会话。请先在 Paseo 创建会话"));

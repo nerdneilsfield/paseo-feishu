@@ -18,7 +18,7 @@ import { createLiveReplies } from "./live-replies.js";
 import { HistoryReadError, readHistory, type HistoryPosition } from "./history.js";
 import { logError, logInfo } from "./log.js";
 
-// 会话控制：身份校验、绑定切换、文本转发卡片动作。
+// channel 负责外部输入校验；这里负责绑定、去重、转发和卡片动作。
 // SWITCHING 只存在于内存；持久化的永远是最后一次成功的 Binding。
 
 let scopeGeneration = 0;
@@ -42,8 +42,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   let closed = false;
   let generation = ++scopeGeneration;
   const navigationCards = new Map<string, { generation: number; chatId: string }>();
-  let history: { scope: BindingScope; position: HistoryPosition; messageId: string; version: number } | null = null;
-  let historyVersion = 0;
+  let history: { position: HistoryPosition; messageId: string; chatId: string } | null = null;
   let historyChain: Promise<void> = Promise.resolve();
 
   function currentScope(): BindingScope | null {
@@ -54,8 +53,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   }
 
   function isCurrentScope(scope: BindingScope): boolean {
-    const current = currentScope();
-    return current !== null && current.generation === scope.generation && current.agentId === scope.agentId && current.chatId === scope.chatId;
+    return !closed && !switching && generation === scope.generation && state.binding?.agentId === scope.agentId && state.binding.chatId === scope.chatId;
   }
 
   const liveReplies = createLiveReplies({ paseo, feishu, cards, isCurrent: isCurrentScope, invalidateHistory: () => { history = null; }, now });
@@ -91,12 +89,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     return op;
   }
 
-  function snapshot(): PersistedState {
-    return JSON.parse(JSON.stringify(state)) as PersistedState;
-  }
-
   function enqueueSave(): Promise<void> {
-    const op = saveChain.then(() => storeDep.save(snapshot()));
+    const op = saveChain.then(() => storeDep.save(state));
     saveChain = op.catch(() => undefined);
     return op;
   }
@@ -210,11 +204,11 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         await safeSendText(chatId, switching ? "切换中，请稍后重新查询历史。" : "当前未绑定会话，请先选择会话。");
         return;
       }
-      if (expected && (!history || history.messageId !== expected.messageId || history.version !== expected.version || scope.agentId !== expected.agentId || scope.generation !== expected.generation)) {
+      if (expected && (!history || history.messageId !== expected.messageId || history.chatId !== chatId)) {
         await safeSendText(chatId, "历史卡片已过期，请重新发送 /history。");
         return;
       }
-      if (more && (!history || !isCurrentScope(history.scope))) {
+      if (more && !history) {
         await safeSendText(chatId, "尚无历史位置，请先发送 /history。");
         return;
       }
@@ -230,16 +224,14 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           return;
         }
         const candidate = await readHistory(paseo, scope, more ? history!.position : null, () => isCurrentScope(scope));
-        if (!candidate || !isCurrentScope(scope)) return;
-        const version = historyVersion + 1;
+        if (!candidate) return;
         const messageId = await feishu.sendCard(chatId, cards.history({
-          agent, scope, version, messages: candidate.messages,
+          agent, messages: candidate.messages,
           hasOlder: candidate.position.hasOlder || candidate.position.buffer.length > 0,
         }));
         if (!isCurrentScope(scope)) return;
-        historyVersion = version;
         if (history) navigationCards.delete(history.messageId);
-        history = { scope, position: candidate.position, messageId, version };
+        history = { position: candidate.position, messageId, chatId };
         rememberNavigation(messageId, chatId);
       } catch (err) {
         if (!isCurrentScope(scope)) return;
@@ -283,11 +275,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       logInfo("session.message.ignored", { messageId: msg.messageId, reason: "closed" });
       return;
     }
-    // 身份/渠道校验：不通过只记诊断日志，不向发送者回复会话信息。
-    if (msg.senderId !== ownerOpenId || msg.chatType !== "p2p") {
-      logInfo("session.message.ignored", { messageId: msg.messageId, reason: "unauthorized" });
-      return;
-    }
     // 去重放在入口：未绑定/切换中/命令这些不转发的消息也要记一笔，
     // 否则重投后已绑定，它们会被当成普通提示词转给 Agent（A01/A10）。
     if (state.deliveries[msg.messageId]) {
@@ -304,12 +291,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         logErr("save consumed", err);
       }
     };
-    if (msg.rawContentType !== "text") {
-      logInfo("session.routed", { messageId: msg.messageId, action: "unsupported_content_type" });
-      await consume();
-      await safeSendText(msg.chatId, "仅支持文本消息，其他类型暂不支持。");
-      return;
-    }
     const cmd = msg.text.trim();
     const [first, ...args] = cmd.split(/\s+/);
     if (first === "/help" || first === "/history") {
@@ -364,7 +345,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       await safeSendText(targetChatId, "Paseo 未连接，消息未发送");
       return;
     }
-    if (!targetScope || !(await liveReplies.ensureReady(targetScope)) || !isCurrentScope(targetScope) || !paseo.isReady()) {
+    if (!targetScope || !(await liveReplies.ensureReady(targetScope)) || !isCurrentScope(targetScope)) {
       state.deliveries[msg.messageId] = { state: "rejected", at: now() };
       await enqueueSave().catch((err) => logErr("save observation rejection", err));
       if (targetScope && isCurrentScope(targetScope)) await safeSendText(targetChatId, "动态回复观察尚未就绪，消息未发送，请稍后重试。");
@@ -533,7 +514,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   ): Promise<CardResponse> {
     const decision = approve ? "allow" : "deny";
     const binding = state.binding;
-    if (!binding?.agentId || agentId !== binding.agentId) {
+    if (!binding?.agentId || agentId !== binding.agentId || evt.chatId !== binding.chatId) {
       return toast("info", "该请求已处理");
     }
     if (state.decidedPermissions[requestId] || inFlightPermissions.has(requestId)) {
@@ -546,26 +527,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     const release = (): void => {
       inFlightPermissions.delete(requestId);
     };
-    let pendings;
-    try {
-      pendings = await paseo.getPendingPermissions(binding.agentId);
-    } catch (err) {
-      release();
-      logErr("getPendingPermissions", err);
-      return toast("error", "查询审批状态失败，请稍后重试");
-    }
-    const found = pendings.find((p) => p.requestId === requestId);
-    if (!found || !found.mappable) {
-      state.decidedPermissions[requestId] = { decision: "resolved_elsewhere", at: now() };
-      try {
-        await enqueueSave();
-      } catch (err) {
-        logErr("save resolved_elsewhere", err);
-      } finally {
-        release();
-      }
-      return toast("info", "该请求已处理");
-    }
     const targetAgent = binding.agentId;
     const targetChat = binding.chatId;
     runBackground(
@@ -580,6 +541,11 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
             return;
           }
           if (!res.ok) {
+            if (res.reason === "not_pending") {
+              await markPermissionDecided(requestId, "resolved_elsewhere");
+              await safeSendText(targetChat, "该请求已处理。");
+              return;
+            }
             await safeSendText(targetChat, `审批未成功（${res.reason}），未重复提交，请到 Paseo 核对。`);
             return;
           }
@@ -589,17 +555,10 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           } catch (err) {
             logErr("save permission decision", err);
           }
-          let title = "当前会话";
-          try {
-            const a = await paseo.refreshAgent(targetAgent);
-            if (a?.title) title = a.title;
-          } catch (err) {
-            logErr(`refresh ${short(targetAgent)}`, err);
-          }
           try {
             await feishu.updateCard(
               evt.messageId,
-              cards.permissionResolved({ agentTitle: title, outcome: decision }),
+              cards.permissionResolved({ agentTitle: "当前会话", outcome: decision }),
             );
           } catch (err) {
             logErr(`updateCard ${short(evt.messageId)}`, err);
@@ -616,7 +575,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
 
   async function handleCardAction(evt: IncomingCardAction): Promise<CardResponse> {
     if (closed) return toast("error", "服务已关闭");
-    if (evt.operatorOpenId !== ownerOpenId) return toast("error", "无权限");
     const action = evt.action;
     switch (action.action) {
       case "navigate": {
@@ -626,7 +584,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
         return toast("loading", "正在打开…");
       }
       case "history_page":
-        if (!history || history.messageId !== evt.messageId || history.version !== action.version || history.scope.agentId !== action.agentId || history.scope.generation !== action.generation || !isCurrentScope(history.scope) || history.scope.chatId !== evt.chatId) return toast("warning", "历史卡片已过期，请重新发送 /history");
         runBackground(sendHistory(evt.chatId, !action.latest, { ...action, messageId: evt.messageId }), "history_page");
         return toast("loading", "正在读取历史…");
       case "select_agent":
@@ -690,8 +647,6 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     handleCardAction,
     currentScope,
     isCurrentScope,
-    currentAgentId: () => state.binding?.agentId ?? null,
-    currentChatId: () => state.binding?.chatId ?? null,
     markNotified,
     markPermissionDecided,
     close,

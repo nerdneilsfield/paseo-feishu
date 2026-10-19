@@ -4,10 +4,7 @@ import { z } from "zod";
 import { emptyState, StoreCorruptError } from "./contracts.js";
 import type { PersistedState, Store } from "./contracts.js";
 
-// 各幂等记录的上限：保存前裁剪，只保留 at 最新的条目。
-export const MAX_DELIVERIES = 500;
-export const MAX_NOTIFIED = 500;
-export const MAX_DECIDED = 500;
+const RECORD_LIMIT = 500;
 
 const bindingSchema = z.object({
   chatId: z.string(),
@@ -37,21 +34,19 @@ const stateSchema = z.object({
   ),
 });
 
-function takeNewestRecord<T extends { at: number }>(
+function takeNewestRecord<T>(
   rec: Record<string, T>,
-  max: number,
 ): Record<string, T> {
-  const entries = Object.entries(rec).sort((a, b) => a[1].at - b[1].at);
-  return Object.fromEntries(entries.slice(-max));
+  return Object.fromEntries(Object.entries(rec).slice(-RECORD_LIMIT));
 }
 
 function trimState(state: PersistedState): PersistedState {
   return {
     version: 1,
     binding: state.binding,
-    deliveries: takeNewestRecord(state.deliveries, MAX_DELIVERIES),
-    notified: [...state.notified].sort((a, b) => a.at - b.at).slice(-MAX_NOTIFIED),
-    decidedPermissions: takeNewestRecord(state.decidedPermissions, MAX_DECIDED),
+    deliveries: takeNewestRecord(state.deliveries),
+    notified: state.notified.slice(-RECORD_LIMIT),
+    decidedPermissions: takeNewestRecord(state.decidedPermissions),
   };
 }
 
@@ -83,10 +78,9 @@ export function createFileStore(filePath: string): Store {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       const tmp = `${filePath}.${process.pid}.${tmpSeq++}.tmp`;
       try {
-        await fs.writeFile(tmp, data, "utf8");
-        await fs.chmod(tmp, 0o600);
-        const fh = await fs.open(tmp, "r");
+        const fh = await fs.open(tmp, "w", 0o600);
         try {
+          await fh.writeFile(data, "utf8");
           await fh.sync();
         } finally {
           await fh.close();

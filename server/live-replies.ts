@@ -40,7 +40,7 @@ export function createLiveReplies(deps: {
   let epoch: string | null = null;
   let waiters: Array<(ok: boolean) => void> = [];
 
-  const valid = (s: BindingScope, v: number): boolean => scope === s && version === v && deps.isCurrent(s);
+  const valid = (v: number): boolean => version === v;
   function settle(ok: boolean): void {
     const pending = waiters;
     waiters = [];
@@ -63,19 +63,11 @@ export function createLiveReplies(deps: {
     if (t.writing || !t.pending) return;
     const pending = t.pending;
     const { scope: s, version: v, view } = pending;
-    if (!valid(s, v) || t.sealed || t.creationFailed) { t.pending = null; return; }
+    if (!valid(v) || t.sealed || t.creationFailed) { t.pending = null; return; }
     if (now() < lastWrite + 1000) { schedule(); return; }
     t.pending = null;
     t.writing = true;
     t.write = (async () => {
-      if (!paseo.isReady()) {
-        ready = false;
-        failed = true;
-        settle(false);
-        view.phase = "Paseo 未连接，状态待核对";
-        view.incomplete = true;
-      }
-      if (!valid(s, v) || t.sealed) return;
       lastWrite = now();
       const card = cards.reply(view);
       if (t.messageId) await feishu.updateCard(t.messageId, card);
@@ -87,7 +79,7 @@ export function createLiveReplies(deps: {
     });
   }
   function fault(s: BindingScope, v: number, phase: string): void {
-    if (!valid(s, v)) return;
+    if (!valid(v)) return;
     ready = false;
     failed = true;
     dirty = false;
@@ -119,16 +111,15 @@ export function createLiveReplies(deps: {
   async function refresh(): Promise<void> {
     const s = scope;
     let v = version;
-    if (!s || !valid(s, v) || !established || failed || running) return;
+    if (!s || !valid(v) || !established || failed || running) return;
     running = true;
     dirty = false;
     lastRead = now();
     try {
-      if (!paseo.isReady()) throw new Error("offline");
       // One bounded projected tail. Older records outside this window are explicitly incomplete.
       const page = await paseo.readTimeline(s.agentId, { direction: "tail", projection: "projected", limit: 50 });
-      if (!valid(s, v)) return;
-      if (!paseo.isReady() || page.error) throw new Error("snapshot unavailable");
+      if (!valid(v)) return;
+      if (page.error) throw new Error("snapshot unavailable");
       if (epoch !== null && epoch !== page.epoch) {
         deps.invalidateHistory();
         turn = null;
@@ -171,7 +162,6 @@ export function createLiveReplies(deps: {
     }
   }
   function event(s: BindingScope, value: TimelineEvent): void {
-    if (scope !== s || !deps.isCurrent(s) || value.agentId !== s.agentId) return;
     const e = value.event;
     if (e.type === "error") {
       ++version; // invalidate any outstanding snapshot and queued progress
@@ -218,12 +208,12 @@ export function createLiveReplies(deps: {
         if (attempt === observation) event(s, value);
       });
       void subscription.ready.then(() => {
-        if (scope !== s || attempt !== observation || !deps.isCurrent(s) || failed) return;
+        if (attempt !== observation || failed) return;
         established = true;
         dirty = true;
         schedule();
       }, () => {
-        if (scope === s && attempt === observation) fault(s, version, "观察中断，状态待核对（不会自动重发）");
+        if (attempt === observation) fault(s, version, "观察中断，状态待核对（不会自动重发）");
       });
     } catch { fault(s, version, "观察中断，状态待核对（不会自动重发）"); }
   }
@@ -256,10 +246,10 @@ export function createLiveReplies(deps: {
       return new Promise<boolean>(resolve => waiters.push(resolve));
     },
     seal(s, turnId): LiveFinish | null {
-      if (!scope || scope.generation !== s.generation || scope.agentId !== s.agentId || scope.chatId !== s.chatId || !deps.isCurrent(s) || !turnId || !turn || turn.id !== turnId || turn.sealed) return null;
+      if (!scope || scope.generation !== s.generation || scope.agentId !== s.agentId || scope.chatId !== s.chatId || !turnId || !turn || turn.id !== turnId || turn.sealed) return null;
       const boundScope = scope;
       const finalVersion = contentVersion;
-      const currentScope = (): boolean => deps.isCurrent(s) && contentVersion === finalVersion && scope === boundScope;
+      const currentScope = (): boolean => contentVersion === finalVersion && scope === boundScope;
       const t = turn;
       ++version;
       cancelTimer();
@@ -274,10 +264,7 @@ export function createLiveReplies(deps: {
           if (!currentScope()) return;
           let finalized = false;
           try {
-            // Check connection even though hook final text remains available offline.
-            const connected = paseo.isReady();
-            const card = cards.reply({ ...view, incomplete: view.incomplete || !connected });
-            if (!currentScope()) return;
+            const card = cards.reply(view);
             if (t.creationFailed) throw new Error("progress card failed");
             if (t.messageId) await feishu.updateCard(t.messageId, card);
             else t.messageId = await feishu.sendCard(s.chatId, card);

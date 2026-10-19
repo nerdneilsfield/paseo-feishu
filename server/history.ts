@@ -17,7 +17,7 @@ export class HistoryReadError extends Error {
 
 export function excerpt(text: string, limit: number): string {
   const marker = "\n[摘录已截断，请回 Paseo 查看完整内容]";
-  return text.length > limit ? text.slice(0, Math.max(0, limit - marker.length)) + marker : text;
+  return text.length > limit ? text.slice(0, limit - marker.length) + marker : text;
 }
 
 /** Builds a candidate; the caller commits it only after the card has been sent. */
@@ -31,8 +31,6 @@ export async function readHistory(
     ? { ...previous, buffer: [...previous.buffer] }
     : { epoch: null, cursor: null, hasOlder: true, boundary: Infinity, buffer: [] };
   for (let count = 0; position.buffer.length < 10 && position.hasOlder && count < 5; count++) {
-    if (!isCurrent()) return null;
-    if (!paseo.isReady()) throw new HistoryReadError("Paseo 未连接，历史未读取。");
     const page = await paseo.readTimeline(scope.agentId, {
       direction: position.epoch === null ? "tail" : "before",
       ...(position.cursor ? { cursor: position.cursor } : {}),
@@ -54,11 +52,9 @@ export async function readHistory(
       const item = entry.item;
       if (item.type !== "user_message" && item.type !== "assistant_message") continue;
       position.buffer.push({
-        seqStart: entry.seqStart,
-        seqEnd: entry.seqEnd,
         role: item.type === "user_message" ? "user" : "assistant",
         timestamp: entry.timestamp,
-        text: excerpt(item.text, 1200),
+        text: excerpt(item.text, 1000),
       });
     }
     if (page.hasOlder && (!page.startCursor || (position.cursor?.epoch === page.startCursor.epoch && position.cursor.seq === page.startCursor.seq))) {

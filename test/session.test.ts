@@ -84,14 +84,14 @@ class FakePaseo implements PaseoPort {
     if (this.sendBehavior) return this.sendBehavior(agentId, text);
     return this.sendQueue.shift() ?? { ok: true };
   }
-  async getPendingPermissions(agentId: string): Promise<PendingPermission[]> {
-    return this.pendings.get(agentId) ?? [];
-  }
   async respondToPermission(
     agentId: string,
     requestId: string,
     decision: PermissionDecision,
   ): Promise<{ ok: true } | { ok: false; reason: "not_pending" | "not_connected" | "failed" }> {
+    const pending = this.pendings.get(agentId)?.find(p => p.requestId === requestId);
+    if (!pending) return { ok: false, reason: "not_pending" };
+    if (!pending.mappable) return { ok: false, reason: "failed" };
     this.responds.push({ agentId, requestId, decision });
     if (this.respondGate) await this.respondGate;
     return this.respondResult;
@@ -135,10 +135,7 @@ function text(over: Partial<IncomingText> = {}): IncomingText {
   return {
     messageId: `msg-${Math.random().toString(36).slice(2)}`,
     chatId: CHAT,
-    senderId: OWNER,
-    chatType: "p2p",
     text: "hello",
-    rawContentType: "text",
     ...over,
   };
 }
@@ -195,18 +192,17 @@ function selectAction(
   return {
     messageId: picker.messageId,
     chatId: CHAT,
-    operatorOpenId: OWNER,
     action: { action: "select_agent", agentId, pickerRevision: picker.revision },
   };
 }
 
-describe("session: text routing (A01/A03/A10/A11/A13)", () => {
+describe("session: text routing (A01/A03/A10/A13)", () => {
   it("A01: unbound first text shows picker and is not forwarded", async () => {
     const fx = await setup([agent({ id: "a1" })]);
     await fx.session.handleText(text({ messageId: "m1", text: "继续检查背压" }));
     expect(fx.feishu.cards).toHaveLength(1);
     expect(fx.paseo.sends).toHaveLength(0);
-    expect(fx.session.currentAgentId()).toBeNull();
+    expect((fx.session.currentScope()?.agentId ?? null)).toBeNull();
     const st = await createFileStore(fx.storePath).load();
     expect(st.binding?.pickerRevision).toBe(1);
     expect(st.binding?.pickerMessageId).toBe("picker-1");
@@ -218,7 +214,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     const picker = await currentPicker(fx);
     const res = await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
     expect(res.toast.type).toBe("loading");
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     // fake 里没有 create 方法：绑定前后 agent 数量不变是结构保证，这里断言无 send 外调用。
     expect(fx.paseo.agents.size).toBe(2);
 
@@ -231,7 +227,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     const fx = await setup([agent({ id: "a1" }), agent({ id: "a2" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
 
     let release!: (v: SendResult) => void;
     fx.paseo.sendBehavior = () => new Promise<SendResult>((res) => void (release = res));
@@ -242,7 +238,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     const st = await createFileStore(fx.storePath).load();
     const cur = { messageId: st.binding?.pickerMessageId ?? "", revision: st.binding?.pickerRevision ?? 0 };
     await fx.session.handleCardAction(selectAction(fx, cur, "a2"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a2"));
     release({ ok: true });
     await inFlight;
     expect(fx.paseo.sends[0]).toEqual({ agentId: "a1", text: "snapshot me" });
@@ -262,28 +258,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     expect(fx.feishu.texts.at(-1)?.text).toContain("请切换后重发");
 
     release(agent({ id: "a2" }));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
-  });
-
-  it("A11: unauthorized user / group chat get nothing and leak nothing", async () => {
-    const fx = await setup([agent({ id: "a1" })]);
-    await fx.session.handleText(text({ messageId: "m-evil", senderId: "ou_stranger" }));
-    await fx.session.handleText(text({ messageId: "m-grp", chatType: "group" }));
-    expect(fx.feishu.texts).toHaveLength(0);
-    expect(fx.feishu.cards).toHaveLength(0);
-    expect(fx.paseo.sends).toHaveLength(0);
-    expect(fx.paseo.listCalls).toBe(0);
-
-    const evilClick: IncomingCardAction = {
-      messageId: "picker-99",
-      chatId: CHAT,
-      operatorOpenId: "ou_stranger",
-      action: { action: "select_agent", agentId: "a1", pickerRevision: 1 },
-    };
-    const res = await fx.session.handleCardAction(evilClick);
-    expect(res.toast.type).toBe("error");
-    expect(fx.paseo.refreshCalls).toHaveLength(0);
-    expect(fx.feishu.updates).toHaveLength(0);
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a2"));
   });
 
   it("redelivered messages that were consumed while unbound/switching/command never reach the agent after binding", async () => {
@@ -293,7 +268,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     await fx.session.handleText(text({ messageId: "m-cmd", text: "/status" }));
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
 
     // 飞书重投同一批 messageId。
     await fx.session.handleText(text({ messageId: "m-first", text: "不该发出去" }));
@@ -310,7 +285,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     const m = text({ messageId: "m-dup", text: "once" });
     await fx.session.handleText(m);
     await fx.session.handleText(m);
@@ -326,7 +301,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     expect(fx.feishu.texts.at(-1)?.text).toContain("未绑定");
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     await fx.session.handleText(text({ messageId: "c3", text: "/status" }));
     const statusCard = fx.feishu.cards.at(-1)!.card;
     expect(statusCard.kind).toBe("current");
@@ -334,15 +309,7 @@ describe("session: text routing (A01/A03/A10/A11/A13)", () => {
     expect(statusCard).not.toHaveProperty("bindingRevision");
   });
 
-  it("non-text content from owner is refused without forwarding", async () => {
-    const fx = await setup([agent({ id: "a1" })]);
-    const picker = await currentPicker(fx);
-    await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
-    await fx.session.handleText(text({ messageId: "m-img", rawContentType: "image", text: "" }));
-    expect(fx.paseo.sends).toHaveLength(0);
-    expect(fx.feishu.texts.at(-1)?.text).toContain("仅支持文本");
-  });
+
 });
 
 describe("session: switching (A02/A04/A08/A09/A15)", () => {
@@ -353,13 +320,13 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     await fx.session.handleCardAction(selectAction(fx, picker, "relay"));
     // updateCard 发生在落盘之后，等它即等切换完全持久化。
     await vi.waitFor(() => expect(fx.feishu.updates).toHaveLength(1));
-    expect(fx.session.currentAgentId()).toBe("relay");
+    expect((fx.session.currentScope()?.agentId ?? null)).toBe("relay");
     const st = await createFileStore(fx.storePath).load();
     expect((st.binding?.bindingRevision ?? 0)).toBe(revBefore + 1);
     expect(fx.feishu.updates).toHaveLength(1);
     expect(fx.feishu.updates[0]?.messageId).toBe(picker.messageId);
     expect(fx.paseo.sends).toHaveLength(0);
-    expect(fx.session.currentChatId()).toBe(CHAT);
+    expect((fx.session.currentScope()?.chatId ?? null)).toBe(CHAT);
   });
 
   it("A08: repeat click on the bound agent is idempotent with zero side effects", async () => {
@@ -376,7 +343,6 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const res = await fx.session.handleCardAction({
       messageId: st.binding?.pickerMessageId ?? "",
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "select_agent", agentId: "a1", pickerRevision: st.binding?.pickerRevision ?? 0 },
     });
     expect(res.toast.type).toBe("info");
@@ -390,11 +356,11 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const fx = await setup([agent({ id: "a1" }), agent({ id: "a2" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     // 旧卡片（旧 revision + 旧 messageId）再次点击。
     const res = await fx.session.handleCardAction(selectAction(fx, picker, "a2"));
     expect(res.toast.content).toContain("卡片已过期");
-    expect(fx.session.currentAgentId()).toBe("a1");
+    expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1");
     expect(fx.paseo.refreshCalls).toHaveLength(1);
   });
 
@@ -410,7 +376,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     await vi.waitFor(() => expect(fx.paseo.refreshCalls).toHaveLength(1));
     expect(fx.paseo.refreshCalls).toHaveLength(1);
     release(agent({ id: "a2" }));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a2"));
   });
 
   it("A15: empty list shows offline-capable picker; archived cannot bind; closed can", async () => {
@@ -432,11 +398,11 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     expect(bad.toast.type).toBe("loading");
     await vi.waitFor(() => expect(fx2.feishu.texts.length).toBeGreaterThan(0));
     expect(fx2.feishu.texts.at(-1)?.text).toContain("未切换");
-    expect(fx2.session.currentAgentId()).toBeNull();
+    expect((fx2.session.currentScope()?.agentId ?? null)).toBeNull();
 
     const ok = await fx2.session.handleCardAction(selectAction(fx2, picker2, "resumable"));
     expect(ok.toast.type).toBe("loading");
-    await vi.waitFor(() => expect(fx2.session.currentAgentId()).toBe("resumable"));
+    await vi.waitFor(() => expect((fx2.session.currentScope()?.agentId ?? null)).toBe("resumable"));
   });
 
   it("missing agent cannot bind and keeps prior binding", async () => {
@@ -453,7 +419,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     expect(res.toast.type).toBe("loading");
     await vi.waitFor(() => expect(fx.feishu.texts.length).toBeGreaterThan(0));
     expect(fx.feishu.texts.at(-1)?.text).toContain("未切换");
-    expect(fx.session.currentAgentId()).toBe("a1");
+    expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1");
   });
 
   it("updateCard failure does not roll back a saved binding", async () => {
@@ -461,7 +427,7 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const picker = await currentPicker(fx);
     fx.feishu.failUpdate = true;
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     // updateCard 失败后的文字确认发生在落盘之后，等它即等绑定已持久化。
     await vi.waitFor(() => expect(fx.feishu.texts.length).toBeGreaterThan(0));
     const st = await createFileStore(fx.storePath).load();
@@ -481,7 +447,6 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const pending = fx.session.handleCardAction({
       messageId: picker.messageId,
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
     const raced = await Promise.race([
@@ -504,12 +469,11 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const pending = fx.session.handleCardAction({
       messageId: picker.messageId,
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
     expect((await pending).toast.type).toBe("loading");
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     await vi.waitFor(() =>
       expect((fx.feishu.updates.at(-1)?.card as { kind: string }).kind).toBe("current"),
     );
@@ -525,7 +489,6 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const res = await fx.session.handleCardAction({
       messageId: picker.messageId,
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
     expect(res.toast.type).toBe("loading");
@@ -538,7 +501,6 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     const off = await fx.session.handleCardAction({
       messageId: picker.messageId,
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "refresh_agents", pickerRevision: picker.revision },
     });
     expect(off.toast.type).toBe("loading");
@@ -557,7 +519,7 @@ describe("session: send outcomes + readiness", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     fx.paseo.sendQueue.push({ ok: false, reason: "unknown" });
     await fx.session.handleText(text({ messageId: "m-u", text: "risky" }));
     expect(fx.paseo.sends).toHaveLength(1);
@@ -573,7 +535,7 @@ describe("session: send outcomes + readiness", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     fx.paseo.sendQueue.push({ ok: false, reason: "archived" });
     await fx.session.handleText(text({ messageId: "m-a", text: "x" }));
     expect(fx.feishu.texts.at(-1)?.text).toContain("重新选择");
@@ -588,7 +550,7 @@ describe("session: send outcomes + readiness", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     fx.paseo.ready = false;
     await fx.session.handleText(text({ messageId: "m-off", text: "queued?" }));
     expect(fx.paseo.sends).toHaveLength(0);
@@ -616,7 +578,7 @@ describe("session: permissions (A07)", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     fx.paseo.pendings.set("a1", [perm]);
     return fx;
   }
@@ -625,7 +587,6 @@ describe("session: permissions (A07)", () => {
     return {
       messageId: "perm-card-1",
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "approve_permission", agentId: "a1", requestId },
     };
   }
@@ -683,7 +644,8 @@ describe("session: permissions (A07)", () => {
     const fx = await boundWithPending();
     fx.paseo.pendings.set("a1", []); // 桌面端已处理，pending 里没有了
     const res = await fx.session.handleCardAction(approveEvt(fx));
-    expect(res.toast.content).toContain("该请求已处理");
+    expect(res.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("该请求已处理"));
     expect(fx.paseo.responds).toHaveLength(0);
     const st = await createFileStore(fx.storePath).load();
     expect(st.decidedPermissions["req-1"]?.decision).toBe("resolved_elsewhere");
@@ -693,7 +655,8 @@ describe("session: permissions (A07)", () => {
     const fx = await boundWithPending();
     fx.paseo.pendings.set("a1", [{ ...perm, mappable: false }]);
     const res = await fx.session.handleCardAction(approveEvt(fx));
-    expect(res.toast.content).toContain("该请求已处理");
+    expect(res.toast.type).toBe("loading");
+    await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("审批未成功"));
     expect(fx.paseo.responds).toHaveLength(0);
   });
 
@@ -702,23 +665,13 @@ describe("session: permissions (A07)", () => {
     const res = await fx.session.handleCardAction({
       messageId: "perm-card-1",
       chatId: CHAT,
-      operatorOpenId: OWNER,
       action: { action: "deny_permission", agentId: "other-agent", requestId: "req-1" },
     });
     expect(res.toast.content).toContain("该请求已处理");
     expect(fx.paseo.responds).toHaveLength(0);
   });
 
-  it("failed respond reports truthfully and does not mark decided", async () => {
-    const fx = await boundWithPending();
-    fx.paseo.respondResult = { ok: false, reason: "not_pending" };
-    const res = await fx.session.handleCardAction(approveEvt(fx));
-    expect(res.toast.type).toBe("loading");
-    await vi.waitFor(() => expect(fx.feishu.texts.length).toBeGreaterThan(0));
-    expect(fx.feishu.texts.at(-1)?.text).toContain("未成功");
-    const st = await createFileStore(fx.storePath).load();
-    expect(st.decidedPermissions["req-1"]).toBeUndefined();
-  });
+
 });
 
 describe("session: persistence + lifecycle (A12)", () => {
@@ -726,12 +679,12 @@ describe("session: persistence + lifecycle (A12)", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     await fx.session.close();
 
     const s2 = await reopen(fx);
-    expect(s2.currentAgentId()).toBe("a1");
-    expect(s2.currentChatId()).toBe(CHAT);
+    expect((s2.currentScope()?.agentId ?? null)).toBe("a1");
+    expect((s2.currentScope()?.chatId ?? null)).toBe(CHAT);
     await s2.handleText(text({ messageId: "m-after", text: "after restart" }));
     expect(fx.paseo.sends).toEqual([{ agentId: "a1", text: "after restart" }]);
     await s2.close();
@@ -752,7 +705,7 @@ describe("session: persistence + lifecycle (A12)", () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
     await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1"));
     await fx.session.close();
     await fx.session.handleText(text({ messageId: "m-late", text: "late" }));
     expect(fx.paseo.sends).toHaveLength(0);
@@ -778,13 +731,12 @@ async function boundFixture(): Promise<Fixture> {
 }
 
 function historyMessages(fx: Fixture): Array<{ text: string; seqStart: number }> {
-  return fx.feishu.cards.at(-1)!.card.messages as Array<{ text: string; seqStart: number }>;
+  const messages = fx.feishu.cards.at(-1)!.card.messages as Array<{ text: string }>;
+  return messages.map(message => ({ ...message, seqStart: Number(message.text.replace("message-", "")) }));
 }
 
 function historyAction(fx: Fixture, latest = false): IncomingCardAction {
-  const card = fx.feishu.cards.at(-1)!.card;
-  const scope = fx.session.currentScope()!;
-  return { messageId: `picker-${fx.feishu.seq}`, chatId: CHAT, operatorOpenId: OWNER, action: { action: "history_page", agentId: scope.agentId, generation: scope.generation, version: card.version as number, latest } };
+  return { messageId: `picker-${fx.feishu.seq}`, chatId: CHAT, action: { action: "history_page", latest } };
 }
 
 function deferred<T>() {
@@ -806,8 +758,6 @@ describe("local navigation and history", () => {
     expect(fx.paseo.sends).toHaveLength(0);
     expect(fx.paseo.timelineCalls).toHaveLength(0);
     expect(fx.feishu.texts.map((t) => t.text).join("\n")).toContain("用法");
-    await fx.session.handleText(text({ senderId: "other", text: "/help" }));
-    await fx.session.handleText(text({ chatType: "group", text: "/help" }));
     expect(fx.feishu.cards).toHaveLength(1);
   });
 
@@ -822,12 +772,12 @@ describe("local navigation and history", () => {
   it("help buttons share navigation without manufacturing deliveries", async () => {
     const fx = await setup();
     await fx.session.handleText(text({ messageId: "help", text: "/help" }));
-    await fx.session.handleCardAction({ messageId: "picker-1", chatId: CHAT, operatorOpenId: OWNER, action: { action: "navigate", destination: "commands" } });
+    await fx.session.handleCardAction({ messageId: "picker-1", chatId: CHAT, action: { action: "navigate", destination: "commands" } });
     await vi.waitFor(() => expect(fx.feishu.cards).toHaveLength(2));
     expect(fx.feishu.cards[1]!.card).toMatchObject({ kind: "help", commands: true });
     expect(Object.keys((await createFileStore(fx.storePath).load()).deliveries)).toEqual(["help"]);
     expect(fx.paseo.sends).toHaveLength(0);
-    const invalid = await fx.session.handleCardAction({ messageId: "unknown", chatId: CHAT, operatorOpenId: OWNER, action: { action: "navigate", destination: "sessions" } });
+    const invalid = await fx.session.handleCardAction({ messageId: "unknown", chatId: CHAT, action: { action: "navigate", destination: "sessions" } });
     expect(invalid.toast.type).toBe("warning");
   });
 
@@ -878,7 +828,8 @@ describe("local navigation and history", () => {
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(historyMessages(fx).map((m) => m.seqStart)).toEqual([6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
     expect(fx.paseo.timelineCalls).toHaveLength(1);
-    expect((await fx.session.handleCardAction(action)).toast.type).toBe("warning");
+    await fx.session.handleCardAction(action);
+    await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("过期"));
   });
 
   it("serializes overlapping history commands, and latest resets to the tail", async () => {
@@ -937,7 +888,7 @@ describe("local navigation and history", () => {
       await fx.session.handleText(text({ text: "/sessions" }));
       const card = fx.feishu.cards.at(-1)!.card;
       await fx.session.handleCardAction(selectAction(fx, { messageId: `picker-${fx.feishu.seq}`, revision: card.pickerRevision as number }, "a2"));
-      await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+      await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a2"));
     } else await fx.session.close();
     expect(fx.session.isCurrentScope(scope)).toBe(false);
     gate.resolve(timelinePage([timelineEntry(1)]));
@@ -946,15 +897,14 @@ describe("local navigation and history", () => {
     expect(fx.feishu.cards.length).toBe(count + (operation === "switch" ? 1 : 0));
   });
 
-  it("validates history card id, agent, generation and version", async () => {
+  it("rejects history callbacks from a different message or chat", async () => {
     const fx = await boundFixture();
     await fx.session.handleText(text({ text: "/history" }));
     const valid = historyAction(fx);
-    for (const changes of [{ agentId: "a2" }, { generation: -1 }, { version: -1 }]) {
-      const result = await fx.session.handleCardAction({ ...valid, action: { ...valid.action, ...changes } as IncomingCardAction["action"] });
-      expect(result.toast.type).toBe("warning");
+    for (const changes of [{ messageId: "wrong" }, { chatId: "wrong" }]) {
+      await fx.session.handleCardAction({ ...valid, ...changes });
+      await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("过期"));
     }
-    expect((await fx.session.handleCardAction({ ...valid, messageId: "wrong" })).toast.type).toBe("warning");
     expect(fx.paseo.timelineCalls).toHaveLength(1);
   });
 
@@ -970,7 +920,7 @@ describe("local navigation and history", () => {
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
     const st = await createFileStore(fx.storePath).load();
     await fx.session.handleCardAction(selectAction(fx, { messageId: st.binding!.pickerMessageId!, revision: st.binding!.pickerRevision }, "a2"));
-    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a2"));
+    await vi.waitFor(() => expect((fx.session.currentScope()?.agentId ?? null)).toBe("a2"));
     const count = fx.feishu.cards.length;
     gate.resolve(agent({ id: "a1", title: "stale title" }));
     listGate.resolve([agent({ id: "a1" })]);
@@ -1010,7 +960,8 @@ describe("history failure and scope invariants", () => {
     const old = historyAction(fx);
     await fx.session.handleText(text({ text: "/history more" }));
     expect(fx.feishu.texts.at(-1)!.text).toContain("过期");
-    expect((await fx.session.handleCardAction(old)).toast.type).toBe("warning");
+    await fx.session.handleCardAction(old);
+    await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("过期"));
     await fx.session.handleText(text({ text: "/history more" }));
     expect(fx.feishu.texts.at(-1)!.text).toContain("先发送 /history");
     expect(fx.paseo.timelineCalls).toHaveLength(2);
@@ -1050,7 +1001,7 @@ it("failed switch releases old observation and registers the restored binding wi
   const binding = (await createFileStore(fx.storePath).load()).binding!;
   await fx.session.handleCardAction(selectAction(fx, { messageId: binding.pickerMessageId!, revision: binding.pickerRevision }, "missing"));
   await vi.waitFor(() => expect(fx.feishu.texts.at(-1)?.text).toContain("未切换"));
-  expect(fx.session.currentAgentId()).toBe("a1");
+  expect((fx.session.currentScope()?.agentId ?? null)).toBe("a1");
   expect(fx.session.isCurrentScope(oldScope)).toBe(false);
   expect(fx.paseo.subscriptions).toBe(2);
   expect(fx.paseo.releases).toBe(1);

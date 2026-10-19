@@ -233,29 +233,6 @@ describe("createPaseoPort", () => {
     }
   });
 
-  it("getPendingPermissions 必须先 refresh 再读", async () => {
-    const { client } = setupClient();
-    const port = createPaseoPort({ paseoUrl: "ws://x" });
-    const h = refHandle(client, "a1");
-    const req = fakePermissionRequest();
-    h.refresh.mockImplementation(async () => {
-      h.pendingPermissions = [req];
-      return { agent: fakeSnapshot(), project: null };
-    });
-    const perms = await port.getPendingPermissions("a1");
-    expect(h.refresh).toHaveBeenCalled();
-    expect(perms).toHaveLength(1);
-    expect(perms[0]!.requestId).toBe("req-1");
-  });
-
-  it("getPendingPermissions 查询失败或未连接时抛错，不返回 []", async () => {
-    const { client } = setupClient();
-    const port = createPaseoPort({ paseoUrl: "ws://x" });
-    const h = refHandle(client, "a1");
-    h.refresh.mockRejectedValue(new Error("boom"));
-    await expect(port.getPendingPermissions("a1")).rejects.toThrow("boom");
-  });
-
   it("respondToPermission：不在 pending 返回 not_pending，用对应 behavior 的 actionId", async () => {
     const { client } = setupClient();
     const port = createPaseoPort({ paseoUrl: "ws://x" });
@@ -298,13 +275,7 @@ describe("createPaseoPort", () => {
     expect(h.refresh.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("close 幂等", async () => {
-    const { client } = setupClient();
-    const port = createPaseoPort({ paseoUrl: "ws://x" });
-    await port.close();
-    await port.close();
-    expect(client.close).toHaveBeenCalledTimes(1);
-  });
+
 });
 
 

@@ -73,8 +73,6 @@ function makeSession(over: Partial<SessionController> = {}): SessionController {
     resumeObservation() {},
     currentScope: () => null,
     isCurrentScope: () => false,
-    currentAgentId: () => null,
-    currentChatId: () => null,
     markNotified: vi.fn().mockResolvedValue(true),
     markPermissionDecided: vi.fn().mockResolvedValue(true),
     close: vi.fn().mockResolvedValue(undefined),
@@ -231,7 +229,7 @@ describe("message 监听", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(session.handleText).toHaveBeenCalledTimes(1);
     expect(session.handleText).toHaveBeenCalledWith(
-      expect.objectContaining({ messageId: "om_1", senderId: OWNER, text: "hello" }),
+      expect.objectContaining({ messageId: "om_1", text: "hello" }),
     );
     await feishu.stop();
   });
@@ -256,8 +254,8 @@ describe("message 监听", () => {
 describe("cardAction 监听", () => {
   test.each([
     { action: "navigate", destination: "history" },
-    { action: "history_page", agentId: "a1", generation: 1, version: 2, latest: false },
-    { action: "history_page", agentId: "a1", generation: 1, version: 2, latest: true },
+    { action: "history_page", latest: false },
+    { action: "history_page", latest: true },
   ])("parses local navigation values: %j", async (action) => {
     const { feishu, fake } = setup();
     const session = makeSession();
@@ -279,7 +277,7 @@ describe("cardAction 监听", () => {
     const res = await fake.handlers["cardAction"]?.(cardEvt(VALID_SELECT));
     expect(res).toEqual({ toast: { type: "success", content: "已绑定" } });
     expect(session.handleCardAction).toHaveBeenCalledWith(
-      expect.objectContaining({ operatorOpenId: OWNER }),
+      expect.objectContaining({ action: VALID_SELECT }),
     );
     await feishu.stop();
   });
@@ -316,16 +314,6 @@ describe("cardAction 监听", () => {
     };
     expect(session.handleCardAction).not.toHaveBeenCalled();
     expect(res.toast.content).not.toContain(OWNER);
-    await feishu.stop();
-  });
-
-  test("字符串形式的 JSON value 也能解析", async () => {
-    const { feishu, fake } = setup();
-    const session = makeSession();
-    await feishu.start(session);
-    const res = await fake.handlers["cardAction"]?.(cardEvt(JSON.stringify(VALID_SELECT)));
-    expect(res).toEqual({ toast: { type: "success", content: "ok" } });
-    expect(session.handleCardAction).toHaveBeenCalledTimes(1);
     await feishu.stop();
   });
 

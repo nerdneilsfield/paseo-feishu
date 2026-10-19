@@ -36,8 +36,6 @@ export interface LiveReplies {
 }
 
 export interface HistoryMessage {
-  seqStart: number;
-  seqEnd: number;
   role: "user" | "assistant";
   timestamp: string;
   text: string;
@@ -142,8 +140,6 @@ export interface PaseoPort {
   /** 返回 null 表示不存在。内部必须先 refresh()。 */
   refreshAgent(agentId: string): Promise<AgentSummary | null>;
   send(agentId: string, text: string): Promise<SendResult>;
-  /** 内部必须先 refresh() 再读，因为 ref() 之后 pendingPermissions 为 null。未连接或查询失败时抛错（不返回 []）；Agent 不存在返回 []。 */
-  getPendingPermissions(agentId: string): Promise<PendingPermission[]>;
   respondToPermission(
     agentId: string,
     requestId: string,
@@ -170,7 +166,7 @@ export interface FeishuPort {
 export interface CardBuilders {
   reply(input: ReplyView): FeishuCard;
   help(input: { commands: boolean }): FeishuCard;
-  history(input: { agent: AgentSummary; scope: BindingScope; version: number; messages: HistoryMessage[]; hasOlder: boolean }): FeishuCard;
+  history(input: { agent: AgentSummary; messages: HistoryMessage[]; hasOlder: boolean }): FeishuCard;
   picker(input: {
     agents: AgentSummary[];
     page: number;
@@ -193,27 +189,23 @@ export interface CardBuilders {
 
 export type CardAction =
   | { action: "navigate"; destination: "sessions" | "status" | "history" | "help" | "commands" }
-  | { action: "history_page"; agentId: string; generation: number; version: number; latest: boolean }
+  | { action: "history_page"; latest: boolean }
   | { action: "select_agent"; agentId: string; pickerRevision: number }
   | { action: "refresh_agents"; pickerRevision: number }
   | { action: "page_agents"; page: number; pickerRevision: number }
   | { action: "approve_permission"; agentId: string; requestId: string; cardRevision?: number }
   | { action: "deny_permission"; agentId: string; requestId: string; cardRevision?: number };
 
+/** channel 已完成鉴权、私聊及消息类型校验。 */
 export interface IncomingText {
   messageId: string;
   chatId: string;
-  senderId: string;
-  chatType: string;
   text: string;
-  /** 飞书 msg_type；非 "text" 一律拒绝。 */
-  rawContentType: string;
 }
 
 export interface IncomingCardAction {
   messageId: string;
   chatId: string;
-  operatorOpenId: string;
   action: CardAction;
 }
 
@@ -235,9 +227,6 @@ export interface SessionController {
   resumeObservation(): void;
   currentScope(): BindingScope | null;
   isCurrentScope(scope: BindingScope): boolean;
-  currentAgentId(): string | null;
-  /** 当前绑定对应的私聊 chatId；未绑定为 null。 */
-  currentChatId(): string | null;
   /** 通知/审批幂等记录。返回 true 表示首次（应当发送），false 表示已处理过。 */
   markNotified(key: string): Promise<boolean>;
   markPermissionDecided(

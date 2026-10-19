@@ -35,6 +35,14 @@ function toAgentSummary(agent: PaseoAgent): AgentSummary {
   };
 }
 
+function toolActions(request: AgentPermissionRequest): { allow: string; deny: string } | null {
+  const actions = request.actions;
+  if (request.kind !== "tool" || actions?.length !== 2) return null;
+  const allow = actions.find(a => a.behavior === "allow")?.id;
+  const deny = actions.find(a => a.behavior === "deny")?.id;
+  return allow && deny && allow !== deny ? { allow, deny } : null;
+}
+
 /**
  * 把 Paseo 权限请求映射成飞书侧的待审批项。
  * summary 只取 title/description 并截断；绝不碰 input/detail/metadata，
@@ -51,24 +59,9 @@ export function toPendingPermission(
     request.kind === "mode"
       ? request.kind
       : "other";
-  const actions = request.actions ?? [];
-  const allows = actions.filter((a) => a.behavior === "allow");
-  const denies = actions.filter((a) => a.behavior === "deny");
-  const allowActionId = allows[0]?.id;
-  const denyActionId = denies[0]?.id;
-  // 仅当 kind 为 tool、且恰有一个 allow 与一个 deny 动作时才可映射成二选一按钮。
-  const mappable =
-    request.kind === "tool" &&
-    actions.length === 2 &&
-    allows.length === 1 &&
-    denies.length === 1 &&
-    typeof allowActionId === "string" &&
-    allowActionId.length > 0 &&
-    typeof denyActionId === "string" &&
-    denyActionId.length > 0;
   const rawSummary =
     [request.title, request.description]
-      .filter((s): s is string => typeof s === "string" && s.length > 0)
+      .filter(Boolean)
       .join("\n") ||
     request.name ||
     request.kind;
@@ -79,7 +72,7 @@ export function toPendingPermission(
     kind,
     title: request.title ?? request.name,
     summary,
-    mappable,
+    mappable: toolActions(request) !== null,
   };
 }
 
@@ -99,8 +92,6 @@ export function createPaseoPort(
     // 用 SDK 自带的重连机制，不自己另起重连循环。
     reconnect: { enabled: true },
   });
-  let closed = false;
-
   function isConnected(): boolean {
     return client.getConnectionState().status === "connected";
   }
@@ -117,7 +108,6 @@ export function createPaseoPort(
     },
 
     async connect(): Promise<void> {
-      if (closed) return;
       logInfo("paseo.connect.started");
       try {
         await client.connect();
@@ -193,18 +183,6 @@ export function createPaseoPort(
       }
     },
 
-    async getPendingPermissions(agentId: string): Promise<PendingPermission[]> {
-      // 查询失败必须抛错，不能返回 []：调用方会把“没找到”当成“已在别处处理”并永久记录。
-      if (!isConnected()) throw new Error("paseo not connected");
-      const handle = client.agents.ref(agentId);
-      // ref() 之后 pendingPermissions 为 null，必须先 refresh() 再读。
-      const result = await handle.refresh();
-      if (!result) return [];
-      return (handle.pendingPermissions ?? []).map((request) =>
-        toPendingPermission(agentId, request),
-      );
-    },
-
     async respondToPermission(
       agentId: string,
       requestId: string,
@@ -218,28 +196,18 @@ export function createPaseoPort(
         if (!result) return { ok: false, reason: "not_pending" };
         pending = handle.pendingPermissions ?? [];
       } catch {
-        return { ok: false, reason: "not_pending" };
+        return { ok: false, reason: "failed" };
       }
       const request = pending.find((r) => r.id === requestId);
       if (!request) return { ok: false, reason: "not_pending" };
-      const selectedActionId = (request.actions ?? []).find(
-        (a) => a.behavior === decision,
-      )?.id;
+      const actions = toolActions(request);
+      if (!actions) return { ok: false, reason: "failed" };
       try {
         // SDK 的 respondToPermission 只把消息写进 socket 就返回，daemon 拒绝时不会抛。
         // 权威结果是随后 refresh 到的 pendingPermissions：请求还在就是没批准。
         await handle.respondToPermission({
           requestId,
-          response:
-            decision === "allow"
-              ? {
-                  behavior: "allow" as const,
-                  ...(selectedActionId ? { selectedActionId } : {}),
-                }
-              : {
-                  behavior: "deny" as const,
-                  ...(selectedActionId ? { selectedActionId } : {}),
-                },
+          response: { behavior: decision, selectedActionId: actions[decision] },
         });
         const after = await handle.refresh();
         if (!after) return { ok: false, reason: "failed" };
@@ -256,16 +224,7 @@ export function createPaseoPort(
     },
 
     async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
-      try {
-        await client.close();
-      } catch (err) {
-        console.error(
-          "[paseo-feishu] paseo close failed:",
-          err instanceof Error ? err.message : err,
-        );
-      }
+      await client.close();
     },
   };
 }

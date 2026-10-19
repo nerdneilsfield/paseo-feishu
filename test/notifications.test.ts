@@ -24,11 +24,9 @@ function setup() {
   const decided = new Map<string, string>();
   const scope = { generation: 1, agentId: "agent-1", chatId: "chat-1" };
   const session = {
-    currentScope: () => scope,
+    currentScope: vi.fn(() => scope),
     isCurrentScope: (s: unknown) => s === scope,
     liveReplies: null as unknown as SessionController["liveReplies"],
-    currentAgentId: vi.fn((): string | null => "agent-1"),
-    currentChatId: vi.fn((): string | null => "chat-1"),
     markNotified: vi.fn(async (key: string) => {
       if (notified.has(key)) return false;
       notified.add(key);
@@ -122,7 +120,7 @@ describe("registerNotifications", () => {
 
   it("非当前绑定被忽略", async () => {
     const t = setup();
-    t.session.currentAgentId.mockReturnValue("other-agent");
+    t.session.currentScope.mockReturnValue({ ...t.session.currentScope(), agentId: "other-agent" });
     await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }));
     await t.emit(
       "agent.permission_requested",

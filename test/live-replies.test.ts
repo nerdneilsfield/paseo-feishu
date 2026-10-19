@@ -217,7 +217,7 @@ describe("session observation gate", () => {
     const session = await createSession({ ownerOpenId: "owner", store: { load: async () => state, save: async () => {} }, paseo: paseo as unknown as PaseoPort, cards: createCardBuilders(), feishu });
     expect(paseo.subscribeTimeline).not.toHaveBeenCalled();
     connected = true;
-    const message = { messageId: "m1", chatId: "c", senderId: "owner", chatType: "p2p", text: "hello", rawContentType: "text" };
+    const message = { messageId: "m1", chatId: "c", text: "hello" };
     const first = session.handleText(message); await flush();
     expect(paseo.subscribeTimeline).toHaveBeenCalledOnce();
     expect(send).not.toHaveBeenCalled();

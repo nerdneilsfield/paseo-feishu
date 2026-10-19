@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { AgentSummary } from "../server/contracts.js";
+import { excerpt } from "../server/history.js";
 import { createCardBuilders } from "../server/cards.js";
 
 const builders = createCardBuilders();
@@ -294,16 +295,15 @@ describe("local navigation cards", () => {
   });
 
   test("history retains all ten excerpts within the card text budget with explicit truncation", () => {
-    const scope = { agentId: "a1", chatId: "chat", generation: 2 };
-    const card = builders.history({ agent: agent({ id: "a1" }), scope, version: 3, hasOlder: true, messages: Array.from({ length: 10 }, (_, i) => ({ seqStart: i, seqEnd: i, role: i % 2 ? "assistant" as const : "user" as const, timestamp: "2026-10-19T10:00:00Z", text: "长".repeat(1400) })) });
+    const card = builders.history({ agent: agent({ id: "a1" }), hasOlder: true, messages: Array.from({ length: 10 }, (_, i) => ({ role: i % 2 ? "assistant" as const : "user" as const, timestamp: "2026-10-19T10:00:00Z", text: excerpt("长".repeat(1400), 1000) })) });
     const md = collectMarkdown(card);
     expect(md.length).toBeLessThanOrEqual(12000);
     expect(md.match(/摘录已截断/g)).toHaveLength(10);
     expect(md.match(/2026-10-19T10:00:00Z/g)).toHaveLength(10);
     expect(md).toContain("Paseo 查看完整内容");
     expect(collectButtons(card).map(callbackValue)).toEqual(expect.arrayContaining([
-      { action: "history_page", agentId: "a1", generation: 2, version: 3, latest: false },
-      { action: "history_page", agentId: "a1", generation: 2, version: 3, latest: true },
+      { action: "history_page", latest: false },
+      { action: "history_page", latest: true },
     ]));
   });
 });

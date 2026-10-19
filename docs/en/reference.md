@@ -43,7 +43,7 @@ Any text outside this table is not a command. While a session is bound, the plug
 
 Commands are case-sensitive; surrounding whitespace is ignored. `/sessions` and `/status` must be the whole message. The exact first word `/help` or `/history` is always handled locally, including invalid arguments (which return usage). `/helpful`, other provider commands such as `/compact`, and ordinary Chinese text keep the normal forwarding behavior.
 
-History uses projected SDK pages, filtering out reasoning and tools. Each command scans at most five pages of 50 entries, displays up to ten messages in sequence order, and buffers undisplayed excerpts in memory. Each excerpt is at most 1,200 characters; card text is limited to 12,000 with explicit truncation guidance to Paseo. A successful card send advances the position; failed reads or sends leave it unchanged. Switching, restarting or an invalid timeline cursor resets it. Read errors and gaps are reported separately from empty history. The menu configuration is described in [Setup](./setup.md#optional-bot-menu).
+History uses projected SDK pages, filtering out reasoning and tools. Each command scans at most five pages of 50 entries, displays up to ten messages in sequence order, and buffers undisplayed excerpts in memory. Each excerpt is at most 1,000 characters; card text is limited to 12,000 with explicit truncation guidance to Paseo. A successful card send advances the position; failed reads or sends leave it unchanged. Switching, restarting or an invalid timeline cursor resets it. Read errors and gaps are reported separately from empty history. The menu configuration is described in [Setup](./setup.md#optional-bot-menu).
 
 ## Message handling
 
@@ -52,20 +52,20 @@ For each incoming message, the plugin applies the following rules in order and s
 | Condition | Behavior |
 | --- | --- |
 | The sender is not `FEISHU_OWNER_OPEN_ID`, the chat is not private, or the sender is a bot | Dropped without a reply. |
-| The message is not text | Replies "仅支持文本消息，其他类型暂不支持。" (only text is supported). |
+| The message is not text | Dropped without a reply. |
 | The message is a local command listed above (including invalid `/help` or `/history` arguments) | Runs local navigation or replies with usage, without an agent turn. |
 | A session switch is in progress | Replies "切换中：此消息未发送，请切换后重发。" (switching; message not sent). |
 | No session is bound | Sends the picker card. The message is not forwarded. |
 | Paseo is not connected | Replies "Paseo 未连接，消息未发送" (Paseo not connected; message not sent). The message is not queued. |
 | A session is bound and Paseo is connected | Sends the message to the bound agent. |
 
-The plugin deduplicates messages by Feishu/Lark `message_id`. If Feishu/Lark redelivers a message, the agent does not receive it a second time. Every branch above, including the rejecting ones, records the `message_id`, so a redelivery does not change the outcome.
+The plugin deduplicates messages by Feishu/Lark `message_id`. If Feishu/Lark redelivers a message, the agent does not receive it a second time. Messages that pass the channel checks are recorded before local routing or forwarding.
 
 After a message is sent to the agent, the bot replies with one of four results:
 
 | Reply | Meaning |
 | --- | --- |
-| 已发送（非任务完成）到当前会话。 | Paseo accepted the message. This is not the agent's answer. A notification follows when the turn ends. |
+| Paseo 已受理（非任务完成），进展将在回复卡显示。 | Paseo accepted the message. This is not the agent's answer. A notification follows when the turn ends. |
 | 发送结果不确定，请到 Paseo 核对，未自动重发 | The request was sent but no confirmation came back. The plugin does not resend, to avoid running the prompt twice. |
 | 当前会话不可用（不存在或已归档），消息未发送，请重新选择会话。 | The bound agent no longer exists or is archived. |
 | Paseo 拒绝了这条消息，消息未发送。 | Paseo rejected the message. |
@@ -83,7 +83,7 @@ After a message is sent to the agent, the bot replies with one of four results:
 
 The picker shows 5 agents per page. The bound agent comes first. The others are ordered from the most recent to the least recent activity. An agent's status appears as one of 运行中 (running), 空闲 (idle), 异常 (error), 已关闭 (closed), 启动中 (starting), or 未知 (unknown).
 
-A button carries only an action name, an agent ID, a request ID, and a revision number. The plugin revalidates all of them when you click.
+The channel checks callback structure and identity once. Session actions check the current card and binding; history paging uses the latest history card’s message ID.
 
 **Old cards expire.** Each new picker card increments the picker revision and records the new card's message ID. If a clicked card's message ID or revision does not match the record, the plugin answers "卡片已过期，请重新打开" (card expired; reopen it). Send `/sessions` to get a current card.
 
@@ -118,12 +118,12 @@ Notifications go only to the currently bound agent. With no bound session, the p
 
 When you click **允许** or **拒绝**, the plugin:
 
-1. Checks the revision, the request ID, and that the request is still pending.
+1. Checks the current agent and chat, then reads the pending request once and verifies its allow/deny actions.
 2. Submits the decision to Paseo.
 3. Queries Paseo again to confirm the request left the pending list.
 4. Updates the card to "已允许" (allowed) or "已拒绝" (denied).
 
-Repeated clicks on the same request submit it once. If step 3 finds the request still pending, the bot replies "审批未成功（failed）…" and does not submit again. A later click on the same card takes the "already handled" path. If Paseo did apply the decision and only its state was slow to update, this reply is a false alarm, so check in Paseo.
+Repeated clicks on the same request submit it once. If step 3 finds the request still pending, the bot replies "审批未成功（failed）…" and does not submit again. A failed confirmation is not recorded as handled. Check in Paseo before deciding whether to retry.
 
 ## State file
 
@@ -132,9 +132,9 @@ The default path is `~/.paseo/plugins-data/paseo-feishu/state.json`, with mode `
 | Field | Contents | Limit |
 | --- | --- | --- |
 | `binding` | The bound agent ID, chat ID, user open_id, binding revision, and the message ID of the picker card | 1 entry |
-| `deliveries` | Handled message IDs with a state: `claimed`, `accepted`, `rejected`, or `unknown` | Newest 500 |
-| `notified` | Idempotency keys of sent notifications | Newest 500 |
-| `decidedPermissions` | Handled permission request IDs with a result: `allow`, `deny`, or `resolved_elsewhere` | Newest 500 |
+| `deliveries` | Handled message IDs with a state: `claimed`, `accepted`, `rejected`, or `unknown` | Last 500 inserted |
+| `notified` | Idempotency keys of sent notifications | Last 500 inserted |
+| `decidedPermissions` | Handled permission request IDs with a result: `allow`, `deny`, or `resolved_elsewhere` | Last 500 inserted |
 
 The file does not store conversation content, passwords, or the App Secret.
 

@@ -6,7 +6,6 @@ import type {
 import { z } from "zod";
 import { idHint, logError, logInfo, withMessageLog } from "./log.js";
 import type {
-  CardAction,
   CardResponse,
   FeishuChannel,
   FeishuPort,
@@ -31,7 +30,7 @@ const FAILED_RESPONSE: CardResponse = {
 // value 里的 cardRevision 等多余字段会被 zod 默认 strip，只留下契约字段。
 const cardActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("navigate"), destination: z.enum(["sessions", "status", "history", "help", "commands"]) }),
-  z.object({ action: z.literal("history_page"), agentId: z.string().min(1), generation: z.number().int(), version: z.number().int(), latest: z.boolean() }),
+  z.object({ action: z.literal("history_page"), latest: z.boolean() }),
   z.object({
     action: z.literal("select_agent"),
     agentId: z.string().min(1),
@@ -54,19 +53,6 @@ const cardActionSchema = z.discriminatedUnion("action", [
     requestId: z.string().min(1),
   }),
 ]);
-
-function parseCardAction(value: unknown): CardAction | null {
-  let candidate = value;
-  if (typeof candidate === "string") {
-    try {
-      candidate = JSON.parse(candidate) as unknown;
-    } catch {
-      return null;
-    }
-  }
-  const parsed = cardActionSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : null;
-}
 
 export function createFeishuChannel(
   config: Pick<PluginConfig, "feishuAppId" | "feishuAppSecret" | "feishuDomain" | "ownerOpenId">,
@@ -135,17 +121,14 @@ export function createFeishuChannel(
     return {
       messageId: msg.messageId,
       chatId: msg.chatId,
-      senderId: msg.senderId,
-      chatType: msg.chatType,
       text: msg.content,
-      rawContentType: msg.rawContentType,
     };
   }
 
   async function onCardAction(evt: CardActionEvent): Promise<CardResponse> {
     logInfo("feishu.card.action.received", { messageId: evt.messageId, operatorId: idHint(evt.operator.openId) });
-    const action = parseCardAction(evt.action.value);
-    if (action === null) {
+    const parsed = cardActionSchema.safeParse(evt.action.value);
+    if (!parsed.success) {
       logInfo("feishu.card.action.rejected", { messageId: evt.messageId, reason: "invalid_action" });
       return INVALID_RESPONSE;
     }
@@ -156,17 +139,15 @@ export function createFeishuChannel(
     const incoming: IncomingCardAction = {
       messageId: evt.messageId,
       chatId: evt.chatId,
-      operatorOpenId: evt.operator.openId,
-      action,
+      action: parsed.data,
     };
-    return withMessageLog(evt.messageId, () => raceWithLoading(sessionRef.current?.handleCardAction(incoming), evt.messageId));
+    return withMessageLog(evt.messageId, () => raceWithLoading(session.handleCardAction(incoming), evt.messageId));
   }
 
-  // start() 之后才有值；cardAction 回调只在 start 后触发。
-  const sessionRef: { current: SessionController | null } = { current: null };
+  // start() 先赋值再注册回调。
+  let session: SessionController;
 
-  function raceWithLoading(pending: Promise<CardResponse> | undefined, messageId: string): Promise<CardResponse> {
-    if (pending === undefined) return Promise.resolve(FAILED_RESPONSE);
+  function raceWithLoading(pending: Promise<CardResponse>, messageId: string): Promise<CardResponse> {
     // safe 永不 reject：session 抛错记为失败 toast；超时后后台继续，不取消。
     const safe = pending.then(
       (res) => res,
@@ -191,10 +172,8 @@ export function createFeishuChannel(
   return {
     port,
 
-    async start(session: SessionController): Promise<void> {
-      for (const unsub of unsubs) unsub();
-      unsubs = [];
-      sessionRef.current = session;
+    async start(created: SessionController): Promise<void> {
+      session = created;
       unsubs.push(
         // SDK 的内建处理在 raw observer 之前运行；这里仍能看到被策略/去重丢弃的事件。
         channel.onRawEvent("im.message.receive_v1", (raw) => {
@@ -233,7 +212,6 @@ export function createFeishuChannel(
     async stop(): Promise<void> {
       for (const unsub of unsubs) unsub();
       unsubs = [];
-      sessionRef.current = null;
       logInfo("feishu.disconnect.started");
       await channel.disconnect();
       logInfo("feishu.disconnected");
