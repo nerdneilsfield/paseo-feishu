@@ -2,6 +2,7 @@ import type {
   AgentSummary,
   CardBuilders,
   CardResponse,
+  FeishuCard,
   FeishuPort,
   IncomingCardAction,
   IncomingText,
@@ -42,6 +43,24 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   let saveChain: Promise<void> = Promise.resolve();
   // 后台任务跟踪：close() 等待它们（总上限 2 秒）。
   const pending = new Set<Promise<void>>();
+  // 选择、刷新、翻页画的是同一张卡。点击时同步取号，写卡串行，
+  // 旧请求的结果回来时号已经变了就丢弃，避免盖住更新的点击。
+  let sessionCardEpoch = 0;
+  let cardWrite: Promise<void> = Promise.resolve();
+
+  function nextCardEpoch(): number {
+    sessionCardEpoch += 1;
+    return sessionCardEpoch;
+  }
+
+  function paintSessionCard(epoch: number, messageId: string, card: FeishuCard): Promise<void> {
+    const op = cardWrite.then(async () => {
+      if (epoch !== sessionCardEpoch) return;
+      await feishu.updateCard(messageId, card);
+    });
+    cardWrite = op.catch(() => undefined);
+    return op;
+  }
 
   const store: Store = storeDep;
 
@@ -254,6 +273,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (switching) return toast("loading", "正在切换，请稍候");
     if (!paseo.isReady()) return toast("error", "Paseo 未连接，消息未发送");
     switching = true;
+    const cardEpoch = nextCardEpoch();
     const prevChatId = binding.chatId;
     runBackground(
       (async () => {
@@ -301,7 +321,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           return;
         }
         try {
-          await feishu.updateCard(evt.messageId, card);
+          await paintSessionCard(cardEpoch, evt.messageId, card);
         } catch (err) {
           // 已成功保存的绑定不得回滚，只发文字确认。
           logErr(`updateCard ${short(evt.messageId)}`, err);
@@ -323,6 +343,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     const chatId = binding.chatId;
     const pickerRevision = binding.pickerRevision;
     const currentAgentId = binding.agentId;
+    const cardEpoch = nextCardEpoch();
     runBackground(
       (async () => {
         const connected = paseo.isReady();
@@ -338,7 +359,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           }
         }
         try {
-          await feishu.updateCard(
+          await paintSessionCard(
+            cardEpoch,
             evt.messageId,
             cards.picker({
               agents,
@@ -368,6 +390,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     const agentId = binding.agentId;
     const pickerRevision = binding.pickerRevision;
     const chatId = binding.chatId;
+    const cardEpoch = nextCardEpoch();
     runBackground(
       (async () => {
         let summary: AgentSummary | null;
@@ -383,7 +406,8 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           return;
         }
         try {
-          await feishu.updateCard(
+          await paintSessionCard(
+            cardEpoch,
             evt.messageId,
             cards.current({ agent: summary, pickerRevision }),
           );

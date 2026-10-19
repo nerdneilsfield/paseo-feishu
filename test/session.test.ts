@@ -493,6 +493,31 @@ describe("session: switching (A02/A04/A08/A09/A15)", () => {
     await pending;
   });
 
+  it("a slow refresh cannot paint the picker over a selection that already landed", async () => {
+    const fx = await setup([agent({ id: "a1", title: "Relay" })]);
+    const picker = await currentPicker(fx);
+    let release!: (agents: AgentSummary[]) => void;
+    fx.paseo.listAgents = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const pending = fx.session.handleCardAction({
+      messageId: picker.messageId,
+      chatId: CHAT,
+      operatorOpenId: OWNER,
+      action: { action: "refresh_agents", pickerRevision: picker.revision },
+    });
+    expect((await pending).toast.type).toBe("loading");
+    await fx.session.handleCardAction(selectAction(fx, picker, "a1"));
+    await vi.waitFor(() => expect(fx.session.currentAgentId()).toBe("a1"));
+    await vi.waitFor(() =>
+      expect((fx.feishu.updates.at(-1)?.card as { kind: string }).kind).toBe("current"),
+    );
+    release([agent({ id: "a1", title: "Relay" })]);
+    await new Promise((r) => setTimeout(r, 30));
+    expect((fx.feishu.updates.at(-1)?.card as { kind: string }).kind).toBe("current");
+  });
+
   it("open_picker / refresh_agents re-list fresh and update the card; offline card when disconnected", async () => {
     const fx = await setup([agent({ id: "a1" })]);
     const picker = await currentPicker(fx);
