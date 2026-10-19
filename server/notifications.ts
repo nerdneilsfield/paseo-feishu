@@ -31,13 +31,17 @@ function excerptKey(agentId: string, turnId: string | null, timelineLength: numb
 function lastAssistantText(
   timeline: readonly { type: string; text?: string }[],
 ): string | null {
+  // 只拼最后一段连续的助手分片。遇到非 assistant_message 就停，
+  // 否则工具输出之前的旧文本会被并进摘要。
+  const parts: string[] = [];
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item && item.type === "assistant_message" && typeof item.text === "string") {
-      return item.text.length > SUMMARY_LIMIT ? item.text.slice(0, SUMMARY_LIMIT) : item.text;
-    }
+    if (!item || item.type !== "assistant_message" || typeof item.text !== "string") break;
+    parts.push(item.text);
   }
-  return null;
+  if (parts.length === 0) return null;
+  const text = parts.reverse().join("");
+  return text.length > SUMMARY_LIMIT ? text.slice(0, SUMMARY_LIMIT) : text;
 }
 
 function logError(msg: string, err: unknown): void {
