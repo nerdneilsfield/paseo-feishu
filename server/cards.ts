@@ -45,14 +45,14 @@ function button(
 }
 
 function actionRow(buttons: Array<Record<string, unknown>>): Record<string, unknown> {
-  // 2.0 没有 action 容器；按钮放进 column_set，一行一个按钮。
+  const columns = buttons.length > 2 ? [buttons] : buttons.map(btn => [btn]);
   return {
     tag: "column_set",
     flex_mode: "none",
-    columns: buttons.map((btn) => ({
+    columns: columns.map((elements) => ({
       tag: "column",
       width: "auto",
-      elements: [btn],
+      elements,
     })),
   };
 }
