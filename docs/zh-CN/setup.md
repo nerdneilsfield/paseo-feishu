@@ -63,6 +63,10 @@ export FEISHU_OWNER_OPEN_ID=<你的 open_id>
 
 占位符 `<…>` 替换为你在前面步骤取得的值。daemon 如果已在运行，设置后重启它。如果 daemon 是由 systemd、launchd 或桌面应用拉起的，需要把变量写到对应的服务配置里，而不是只在当前终端里 `export`。
 
+**注意环境变量的生效时机：** daemon 启动时继承启动环境，插件启动时再从 daemon 继承环境并读取配置。daemon 启动后，在另一个终端 `export` 或修改 shell 配置文件，不会更新已运行 daemon 的环境。`paseo plugin reload paseo-feishu` 只重启插件，`paseo reload` 只重载 daemon 配置，都不会导入当前终端的新环境变量。修改变量后，需要让 daemon 从更新后的环境重新启动；重启会中断运行中的任务，请在任务结束后操作。
+
+尤其是修改 `FEISHU_OWNER_OPEN_ID` 后，查看新启动日志 `startup.config.loaded` 中的 `ownerId`，确认末 6 位与预期用户一致。如果 `feishu.policy.rejected` 显示 `sender_not_allowed`，比较其中的 `senderId` 和 `ownerId`：两者不一致时，消息已到达插件，但授权用户不匹配，插件不会回复。
+
 按需再设置这些变量：
 
 - 国际版 Lark：`FEISHU_DOMAIN=lark`。不设置时，插件连接国内飞书。
@@ -142,6 +146,7 @@ export FEISHU_OWNER_OPEN_ID=<你的 open_id>
 | 安装时报 `__dirname is not defined` | 使用了没有包含 `server/shim.ts` 的旧版本 | 更新插件到最新版本后重新安装 |
 | 安装时报 `requires Paseo <0.8.0` | `paseo-plugin.json` 缺少 `requirements.paseo` | 恢复该字段，值为 `>=0.8.0` |
 | 日志出现 `missing required env: …` | 变量没有传进 daemon 进程 | 把变量写进 daemon 的启动环境后重启 daemon，不要只在当前终端 `export` |
+| 已修改 `FEISHU_OWNER_OPEN_ID`，日志仍显示旧的 `ownerId` 或 `sender_not_allowed` | 插件仍继承 daemon 启动时的旧环境 | 在 daemon 实际的启动环境中修改变量，任务结束后从新环境重启 daemon；单独重载插件不会导入终端的新变量 |
 | 日志出现 `could not resolve bot identity` | App ID 或 App Secret 错误，机器人能力未启用，或 `FEISHU_DOMAIN` 与账号不符 | 核对两个值和机器人能力；Lark 账号设置 `FEISHU_DOMAIN=lark` |
 | 状态是 `running`，但发消息没有任何反应 | 应用没有发布新版本；没订阅 `im.message.receive_v1`；订阅方式不是长连接；发消息的人不是 `FEISHU_OWNER_OPEN_ID` | 逐项核对第 5、6 步；确认 open_id 取自本应用 |
 | 能收到卡片，点按钮没反应或报错 | 没添加 `card.action.trigger` 回调，或回调订阅方式不是长连接 | 核对第 5 步的第 3、4 点 |

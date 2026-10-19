@@ -63,6 +63,10 @@ export FEISHU_OWNER_OPEN_ID=<your open_id>
 
 Replace each `<…>` placeholder with the value from the previous steps. If a service manager or the desktop app starts the daemon, put the variables in that service's configuration. An `export` in your current terminal does not reach it. Restart the daemon after you set them.
 
+**When environment changes take effect:** the daemon inherits its startup environment, and the plugin inherits that environment and reads its configuration when it starts. Running `export` in another terminal or editing a shell configuration file after the daemon starts does not update the running daemon's environment. `paseo plugin reload paseo-feishu` restarts only the plugin; `paseo reload` reloads daemon configuration. Neither imports new environment variables from your terminal. After changing a variable, start the daemon again from the updated environment. A daemon restart interrupts running tasks, so wait for those tasks to finish.
+
+After changing `FEISHU_OWNER_OPEN_ID`, check `ownerId` in the new `startup.config.loaded` entry and confirm its last 6 characters match the expected user. If `feishu.policy.rejected` reports `sender_not_allowed`, compare its `senderId` and `ownerId`: a mismatch means the message reached the plugin, but the sender is not the configured authorized user, so the plugin sends no reply.
+
 Set more variables only if they apply:
 
 - Lark (international): `FEISHU_DOMAIN=lark`. Without it, the plugin connects to Feishu in China.
@@ -148,6 +152,7 @@ paseo plugin logs paseo-feishu
 | Installation fails with `__dirname is not defined` | The plugin is an old version without `server/shim.ts` | Update the plugin to the latest version and reinstall. |
 | Installation fails with `requires Paseo <0.8.0` | `paseo-plugin.json` has no `requirements.paseo` | Restore the field with the value `>=0.8.0`. |
 | The log shows `missing required env: …` | The variables did not reach the daemon process | Put them in the daemon's startup environment and restart the daemon. |
+| After changing `FEISHU_OWNER_OPEN_ID`, the log still shows the old `ownerId` or `sender_not_allowed` | The plugin still inherits the daemon's old startup environment | Update the environment that actually starts the daemon, then restart it from that environment after running tasks finish. Reloading only the plugin does not import your terminal's new variables. |
 | The log shows `could not resolve bot identity` | Wrong App ID or App Secret, the Bot capability is off, or `FEISHU_DOMAIN` does not match your account | Check both values and the Bot capability. For a Lark account, set `FEISHU_DOMAIN=lark`. |
 | The plugin is `running` but messages get no reply | The app version is not published, `im.message.receive_v1` is not subscribed, the subscription method is not the long connection, or the sender is not `FEISHU_OWNER_OPEN_ID` | Recheck steps 5 and 6. Confirm that the open_id comes from this app. |
 | The card arrives but its buttons do nothing | The `card.action.trigger` callback is not added, or its subscription method is not the long connection | Recheck steps 3 and 4 of section 5. |

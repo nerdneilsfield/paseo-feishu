@@ -10,7 +10,9 @@ The bot's replies and card labels are Chinese strings in version 0.1. This page 
 
 ## Configuration
 
-The plugin reads its configuration only from environment variables. It has no configuration file and no plugin settings. The plugin process reads the variables when it starts, so a variable set after the daemon started has no effect.
+The plugin reads its configuration only from environment variables. It has no configuration file and no plugin settings. The daemon inherits its environment at startup; the plugin inherits that environment and reads its configuration once when it starts. Later terminal exports or shell configuration edits do not update the running daemon's environment. Neither `paseo plugin reload paseo-feishu` nor `paseo reload` imports your terminal's new environment variables. After changing a variable, start the daemon again from the updated environment. A daemon restart interrupts running tasks, so wait for those tasks to finish.
+
+After changing `FEISHU_OWNER_OPEN_ID`, check the last 6 characters of `ownerId` in the new `startup.config.loaded` entry to verify the value in use. `sender_not_allowed` means the SDK received the message, but its sender does not match the plugin's configured authorized user. The daemon can still hold an old value even when your terminal shows the correct one.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |

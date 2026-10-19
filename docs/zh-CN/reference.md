@@ -8,7 +8,9 @@
 
 ## 配置
 
-插件只从环境变量读取配置，没有配置文件或插件设置项。环境变量在 daemon 进程中读取，daemon 启动后才设置的变量不会生效。
+插件只从环境变量读取配置，没有配置文件或插件设置项。daemon 在启动时继承启动环境；插件启动时从 daemon 继承环境，并读取一次配置。之后在终端 `export` 或修改 shell 配置文件，都不会更新已运行 daemon 的环境。`paseo plugin reload paseo-feishu` 和 `paseo reload` 不会导入终端的新环境变量。修改变量后，需要让 daemon 从更新后的启动环境重新启动；重启会中断运行中的任务，请在任务结束后操作。
+
+修改 `FEISHU_OWNER_OPEN_ID` 后，用新启动日志 `startup.config.loaded` 的 `ownerId` 末 6 位核对实际生效值。`sender_not_allowed` 表示消息已经到达 SDK，但发送者与插件实际读取的授权用户不一致；即使终端里变量正确，daemon 仍可能持有旧值。
 
 | 变量 | 必需 | 默认值 | 说明 |
 | --- | --- | --- | --- |
