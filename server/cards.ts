@@ -89,7 +89,7 @@ function sortAgents(agents: AgentSummary[], currentAgentId: string | null): Agen
 }
 
 function agentLine(a: AgentSummary): string {
-  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${oneLine(a.cwdLabel)} · ${STATUS_TEXT[a.status]} · ${formatTime(a.lastActivityAt)}`;
+  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${STATUS_TEXT[a.status]}\n目录：${oneLine(a.cwdLabel)}\n最近活动：${formatTime(a.lastActivityAt)}`;
 }
 
 export function createCardBuilders(): CardBuilders {
@@ -99,7 +99,7 @@ export function createCardBuilders(): CardBuilders {
         schema: SCHEMA,
         header: { title: { tag: "plain_text", content: `Paseo · ${input.phase}` }, template: "grey" },
         body: { elements: [
-          md(`**${oneLine(input.title).slice(0, 200)}** · ${input.phase} · 最近事件 ${formatTime(input.updatedAt)}`),
+          md(`**${oneLine(input.title).slice(0, 200)}**\n最近事件：${formatTime(input.updatedAt)}`),
           ...(input.reason ? [md(`原因：${input.reason}`)] : []),
           md(input.text || "暂无公开助手内容"),
           ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
@@ -109,9 +109,16 @@ export function createCardBuilders(): CardBuilders {
     help({ commands }) {
       return {
         schema: SCHEMA,
-        header: { title: { tag: "plain_text", content: commands ? "Paseo · 命令说明" : "Paseo · 控制台" }, template: "grey" },
+        header: { title: { tag: "plain_text", content: commands ? "Paseo · 命令说明" : "Paseo · 帮助" }, template: "grey" },
         body: { elements: [
-          md(commands ? "/help：打开控制台\n/sessions：选择会话\n/status：查看状态\n/history：最近历史\n/history more：更早历史\n绑定后普通文字会发送给当前 Agent。" : "/help 控制台 · /sessions 选择会话 · /status 状态\n/history 最近历史 · /history more 更早历史\n绑定后普通文字会发送给当前 Agent。"),
+          ...(commands ? [
+            "`/help`：打开帮助",
+            "`/sessions`：选择会话",
+            "`/status`：查看状态",
+            "`/history`：最近历史",
+            "`/history more`：更早历史",
+          ].map(md) : []),
+          md("选择下方操作。绑定后，普通文字会发送到当前会话。"),
           navigation(),
         ] },
       };
@@ -120,7 +127,7 @@ export function createCardBuilders(): CardBuilders {
       const heading = excerpt(agentLine(agent), 500);
       const elements = [md(heading)];
       for (const message of messages) {
-        const label = `**${message.role === "user" ? "用户" : "助手"} · ${message.timestamp}**\n`;
+        const label = `**${message.role === "user" ? "用户" : "助手"}** · ${formatTime(Date.parse(message.timestamp))}\n`;
         elements.push(md(label + message.text));
       }
       if (!messages.length) elements.push(md("本次扫描范围没有用户或助手消息。"));
@@ -195,7 +202,8 @@ export function createCardBuilders(): CardBuilders {
         },
         body: {
           elements: [
-            md(`当前绑定（不代表任务完成）\n${agentLine(agent)}`),
+            md(agentLine(agent)),
+            md("后续消息将发送到此会话。"),
             navigation(),
           ],
         },
@@ -232,9 +240,10 @@ export function createCardBuilders(): CardBuilders {
         },
         body: {
           elements: [
-            md(`**${oneLine(agentTitle)}** · ${oneLine(permission.title)}\n请求 ${shortId}`),
+            md(`**${oneLine(agentTitle)}**`),
             // 只展示 summary：不带环境变量、完整输出或 Paseo 内部动作 ID。
             md(permission.summary),
+            md(`请求 ${shortId}`),
             actionRow([
               button("允许", approveValue, "primary"),
               button("拒绝", denyValue, "danger"),

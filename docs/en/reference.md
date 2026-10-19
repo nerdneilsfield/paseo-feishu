@@ -76,7 +76,7 @@ After a message is sent to the agent, the bot replies with one of four results:
 | --- | --- | --- |
 | Session picker | Paseo · 选择会话 | One **切换到此会话** (switch to this session) per agent, shown as **继续此会话** (continue this session) for the bound agent; **上一页** (previous) and **下一页** (next); **刷新** (refresh). |
 | Current session | Paseo · 当前会话 | **选择会话** (choose session), **状态** (status), **历史** (history), **命令说明** (commands). |
-| Help | Paseo · 控制台 | The same four local navigation buttons. |
+| Help | Paseo · 帮助 | The same four local navigation buttons. |
 | History | Paseo · 会话历史（摘录） | **更早** (earlier, when available), **回到最新** (latest), and local navigation. |
 | Approval request | Paseo · 审批请求 | **允许** (allow) and **拒绝** (deny). |
 | Approval handled | Paseo · 审批已处理 | None. |

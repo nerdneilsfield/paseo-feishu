@@ -287,7 +287,7 @@ describe("local navigation cards", () => {
     expect(collectMarkdown(current)).toContain("Relay");
     expect(collectMarkdown(current)).toContain("work/relay");
     expect(collectMarkdown(current)).toContain("运行中");
-    expect(collectMarkdown(current)).toContain("不代表任务完成");
+    expect(collectMarkdown(current)).toContain("后续消息将发送到此会话");
     expect(JSON.stringify(current)).not.toContain("bindingRevision");
     expect(current.header).toMatchObject({ template: "grey" });
     const picker = builders.picker({ agents: [agent({ id: "a1" })], page: 0, pickerRevision: 1, currentAgentId: "a1", connected: true });
@@ -299,7 +299,7 @@ describe("local navigation cards", () => {
     const md = collectMarkdown(card);
     expect(md.length).toBeLessThanOrEqual(12000);
     expect(md.match(/摘录已截断/g)).toHaveLength(10);
-    expect(md.match(/2026-10-19T10:00:00Z/g)).toHaveLength(10);
+    expect(md.match(/10-19 \d{2}:\d{2}/g)).toHaveLength(10);
     expect(md).toContain("Paseo 查看完整内容");
     expect(collectButtons(card).map(callbackValue)).toEqual(expect.arrayContaining([
       { action: "history_page", latest: false },

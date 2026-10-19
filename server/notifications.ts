@@ -87,8 +87,8 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
         await deps.feishu.sendCard(
           scope.chatId,
           deps.cards.notice({
-            title: `${agentTitle} · 需要审批`,
-            text: `有一条权限请求（${permission.kind}）无法在飞书安全表达，请回 Paseo 处理。`,
+            title: permission.kind === "question" ? "Paseo · 需要回答" : "Paseo · 需要操作",
+            text: `**${agentTitle}**\n\n${permission.summary}\n\n请回 Paseo ${permission.kind === "question" ? "回答" : "处理"}。`,
           }),
         );
       }

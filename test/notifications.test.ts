@@ -183,7 +183,7 @@ describe("registerNotifications", () => {
       request: { ...permRequest, id: "req-2", kind: "question", actions: undefined },
     });
     expect(t.cards.permission).not.toHaveBeenCalled();
-    expect(t.cards.notice).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringContaining("需要审批") }));
+    expect(t.cards.notice).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringContaining("需要回答") }));
   });
 
   it("hook 在 feishu 挂起时仍立刻返回", async () => {
