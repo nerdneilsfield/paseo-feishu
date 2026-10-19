@@ -152,7 +152,7 @@ See the [Pairlet menu configuration notes](https://github.com/heypandax/pairlet/
 
 Only text messages are supported. Other message types get the reply "仅支持文本消息，其他类型暂不支持。"
 
-The bot's replies and card labels are in Chinese in version 0.1. The [reference](./reference.md#cards) lists them with their meanings.
+The bot's replies and card labels are in Chinese in version 0.2. The [reference](./reference.md#cards) lists them with their meanings.
 
 ## Troubleshooting
 

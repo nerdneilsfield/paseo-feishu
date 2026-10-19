@@ -6,7 +6,7 @@ This page lists the configuration, chat commands, message handling rules, notifi
 
 Feishu and Lark are the same product under two names. This page writes "Feishu/Lark" for the product and uses `feishu` in names that appear in code, such as environment variables.
 
-The bot's replies and card labels are Chinese strings in version 0.1. This page quotes them verbatim and gives their meaning.
+The bot's replies and card labels are Chinese strings in version 0.2. This page quotes them verbatim and gives their meaning.
 
 ## Configuration
 
