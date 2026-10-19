@@ -142,10 +142,19 @@ Read the log with `paseo plugin logs paseo-feishu`. Common entries:
 | `Plugin ready` | The plugin loaded. It does not mean Feishu/Lark or Paseo is connected. |
 | `missing required env: …` | The listed required variables are missing. The plugin stays idle. |
 | `could not resolve bot identity …` | Feishu/Lark rejected the App ID or App Secret, the Bot capability is off, or the domain does not match the account. |
-| `[session] <scope> failed (<kind>)` | A step of session handling failed. The log records the error kind only, not message content. |
-| `[paseo-feishu] <scope>: <message>` | An error in notifications or startup wiring. |
+| `startup.session.loading` / `startup.session.ready` | State loading started / the session is ready. |
+| `feishu.connected` / `paseo.connected` | The corresponding connection is established. `startup.ready` includes the current `paseoConnected` state. |
+| `feishu.event.observed` | The SDK observed a message event, with its ID and type. This observer runs after the SDK's built-in handler. |
+| `feishu.policy.rejected` / `feishu.message.rejected` | SDK policy / plugin filtering rejected a message. `reason` explains why; user IDs show only their last 6 characters. |
+| `session.routed` | The message entered a command or forwarding branch. `/status` produces `action=status`. |
+| `session.consume.started` / `session.consume.succeeded` | Saving the message deduplication state started / finished. A lone started entry can indicate a stalled state write. |
+| `feishu.send.started` / `feishu.send.succeeded` / `feishu.send.failed` | A reply send started / succeeded / failed, including elapsed time and error details supplied by the SDK. |
+| `feishu.channel.error` / `session.failed` / `startup.failed` | An SDK, session, or asynchronous startup failure. |
+| `feishu.reconnecting` / `feishu.reconnected` | The Feishu/Lark connection is reconnecting / restored. |
 
-The log code does not write the App Secret, the Paseo password, or message text. Error lines contain the message of the underlying library error, so review a log before you share it.
+New entries use a `[paseo-feishu]` prefix followed by one line of JSON. During message handling, `sourceMessageId` links routing and reply sends to the same input message. Error entries extract the error type, code, reason, HTTP status, Feishu/Lark API code, and request ID when the SDK supplies them. They do not serialize complete requests, responses, or raw events. Known App Secrets, Paseo passwords, Bearer tokens, and URL query parameters are redacted.
+
+To investigate a missing reply, send `/status` in private chat, then rerun `paseo plugin logs paseo-feishu`. The command returns a snapshot rather than following live output. For rejection entries, inspect `reason`. After `session.routed`, use the same `sourceMessageId` to follow state saving and reply delivery. Error messages come from underlying libraries; review the log for sensitive content before sharing it.
 
 ## Lifecycle
 

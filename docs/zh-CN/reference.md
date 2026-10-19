@@ -140,10 +140,19 @@
 | `Plugin ready` | 插件已加载。不代表飞书或 Paseo 已连接 |
 | `missing required env: …` | 列出的必需变量缺失，插件空载 |
 | `could not resolve bot identity …` | 飞书拒绝了 App ID 或 App Secret，机器人能力未启用，或域名与账号不符 |
-| `[session] <场景> failed (<类别>)` | 会话处理中的某一步失败。日志只记录错误类别，不记录消息内容 |
-| `[paseo-feishu] <场景>: <错误信息>` | 通知或装配中的错误 |
+| `startup.session.loading` / `startup.session.ready` | 开始读取状态文件 / 会话已就绪 |
+| `feishu.connected` / `paseo.connected` | 对应连接已建立；`startup.ready` 包含当时的 `paseoConnected` 状态 |
+| `feishu.event.observed` | SDK 已观察到消息事件，包含消息 ID 和类型；此观察点在 SDK 内建处理之后执行 |
+| `feishu.policy.rejected` / `feishu.message.rejected` | SDK 策略 / 插件过滤了消息，`reason` 说明原因，用户 ID 只显示末 6 位 |
+| `session.routed` | 消息进入命令或转发分支，例如 `/status` 对应 `action=status` |
+| `session.consume.started` / `session.consume.succeeded` | 开始 / 完成保存消息去重状态；只有 started 时可能卡在状态保存 |
+| `feishu.send.started` / `feishu.send.succeeded` / `feishu.send.failed` | 回复发送开始 / 成功 / 失败，包含耗时和 SDK 提供的错误信息 |
+| `feishu.channel.error` / `session.failed` / `startup.failed` | SDK 内部、会话处理或异步启动失败 |
+| `feishu.reconnecting` / `feishu.reconnected` | 飞书长连接正在重连 / 已恢复 |
 
-日志代码不输出 App Secret、Paseo 密码和消息正文。错误日志会包含底层库的错误信息，把日志发给别人之前请自行检查。
+新增日志以 `[paseo-feishu]` 加单行 JSON 输出。处理消息时，`sourceMessageId` 将命令路由和回复发送关联到同一条输入消息。错误日志提取错误类型、错误码、原因、HTTP 状态、飞书 API 错误码和请求 ID（底层 SDK 提供时），不序列化完整请求、响应或原始事件。已知 App Secret、Paseo 密码、Bearer token 和 URL 查询参数会被脱敏。
+
+复现无反馈问题时，私聊发送 `/status`，然后重新运行 `paseo plugin logs paseo-feishu`；此命令返回日志快照，不持续跟随。若有拒绝日志，查看 `reason`；若有 `session.routed`，沿相同 `sourceMessageId` 查看保存状态和发送结果。错误信息来自底层库，分享日志前仍需检查是否含敏感内容。
 
 ## 生命周期
 

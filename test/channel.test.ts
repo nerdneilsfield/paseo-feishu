@@ -24,6 +24,7 @@ interface FakeSdk {
   botIdentity?: { openId: string };
   options: unknown;
   on: (name: string, handler: (...args: Array<any>) => unknown) => () => void;
+  onRawEvent: (name: string, handler: (...args: Array<any>) => unknown) => () => void;
   send: (to: string, input: unknown) => Promise<{ messageId: string }>;
   updateCard: (messageId: string, card: unknown) => Promise<void>;
   connect: () => Promise<void>;
@@ -46,6 +47,7 @@ function makeFakeSdk(): FakeSdk {
       fake.unsubs.push(unsub);
       return unsub;
     },
+    onRawEvent: (name, handler) => fake.on(`raw:${name}`, handler),
     send: async (to: string, input: unknown) => {
       fake.sent.push({ to, input });
       return { messageId: "om_new" };
@@ -161,6 +163,62 @@ describe("port 发送", () => {
 });
 
 describe("message 监听", () => {
+  test("SDK 拒绝和原始事件有诊断记录，消息正文不进日志", async () => {
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const { feishu, fake } = setup();
+      const session = makeSession();
+      await feishu.start(session);
+      fake.handlers["reject"]?.({ messageId: "om_rejected", chatId: "oc_dm", senderId: OTHER, reason: "sender_not_allowed" });
+      fake.handlers["raw:im.message.receive_v1"]?.({ message: { message_id: "om_rejected", message_type: "text", content: "PRIVATE_MESSAGE" } });
+      const output = info.mock.calls.flat().join("\n");
+      expect(output).toContain('"event":"feishu.policy.rejected"');
+      expect(output).toContain('"reason":"sender_not_allowed"');
+      expect(output).toContain('"event":"feishu.event.observed"');
+      expect(output).toContain("om_rejected");
+      expect(output).not.toContain("PRIVATE_MESSAGE");
+      expect(session.handleText).not.toHaveBeenCalled();
+      await feishu.stop();
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test("发送错误保留诊断字段并脱敏凭证、正文和请求对象", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const body = "PRIVATE_MESSAGE";
+    const err = Object.assign(new Error(`cannot send ${body}: secret Bearer token123`), {
+      code: "permission_denied",
+      response: {
+        status: 403,
+        data: { code: 99991672, msg: "missing scope" },
+        headers: { "x-tt-logid": "request-123", authorization: "HEADER_SECRET" },
+        config: { data: body },
+      },
+    });
+    try {
+      const { feishu, fake } = setup();
+      fake.send = vi.fn().mockRejectedValue(err);
+      await expect(feishu.port.sendText("oc_dm", body)).rejects.toBe(err);
+      const output = errorLog.mock.calls.flat().join("\n");
+      expect(output).toContain('"event":"feishu.send.failed"');
+      expect(output).toContain('"errorCode":"permission_denied"');
+      expect(output).toContain('"apiCode":99991672');
+      expect(output).toContain('"httpStatus":403');
+      expect(output).toContain("missing scope");
+      expect(output).toContain("request-123");
+      expect(output).not.toContain(body);
+      expect(output).not.toContain("secret");
+      expect(output).not.toContain("token123");
+      expect(output).not.toContain("HEADER_SECRET");
+      expect(info.mock.calls.flat().join("\n")).not.toContain("feishu.send.succeeded");
+    } finally {
+      errorLog.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   test("合法私聊文本转交给 session", async () => {
     const { feishu, fake } = setup();
     const session = makeSession();

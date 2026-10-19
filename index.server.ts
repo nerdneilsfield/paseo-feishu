@@ -9,6 +9,7 @@ import { registerNotifications } from "./server/notifications";
 import { createPaseoPort } from "./server/paseo";
 import { createSession } from "./server/session";
 import { createFileStore } from "./server/store";
+import { idHint, logError, logInfo } from "./server/log";
 
 const LARK_DOMAIN = "https://open.larksuite.com";
 const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
@@ -41,10 +42,6 @@ export function readConfig(env: NodeJS.ProcessEnv): PluginConfig {
   };
 }
 
-function logError(scope: string, err: unknown): void {
-  console.error(`[paseo-feishu] ${scope}:`, err instanceof Error ? err.message : err);
-}
-
 // contribute 必须同步返回 cleanup（宿主不等待 Promise）。所有异步启动放进 start()。
 export default function contribute(server: PluginServerContext): () => void {
   let config: PluginConfig;
@@ -55,6 +52,14 @@ export default function contribute(server: PluginServerContext): () => void {
     logError("config", err);
     return () => {};
   }
+
+  logInfo("startup.config.loaded", {
+    appId: idHint(config.feishuAppId),
+    ownerId: idHint(config.ownerOpenId),
+    domain: config.feishuDomain ?? "https://open.feishu.cn",
+    paseoPasswordSet: Boolean(config.paseoPassword),
+    stateFile: config.stateFile,
+  });
 
   const cards = createCardBuilders();
   const paseo = createPaseoPort(config);
@@ -70,6 +75,7 @@ export default function contribute(server: PluginServerContext): () => void {
   void (async () => {
     // 先连 Paseo（不阻塞），再起 session，最后连飞书：飞书消息进来时 session 必须已就绪。
     void paseo.connect();
+    logInfo("startup.session.loading", { stateFile: config.stateFile });
     const created = await createSession({
       ownerOpenId: config.ownerOpenId,
       store,
@@ -82,11 +88,14 @@ export default function contribute(server: PluginServerContext): () => void {
       return;
     }
     session = created;
+    logInfo("startup.session.ready", { agentId: idHint(created.currentAgentId() ?? undefined) });
     await channel.start(created);
-  })().catch((err) => logError("start", err));
+    logInfo("startup.ready", { paseoConnected: paseo.isReady() });
+  })().catch((err) => logError("startup.failed", err));
 
   return () => {
     stopped = true;
+    logInfo("shutdown.started");
     // 关闭只有约 4 秒：并行收尾，各自吞掉错误。
     void Promise.allSettled([
       channel.stop(),

@@ -14,6 +14,7 @@ import type {
   Store,
   ToastType,
 } from "./contracts.js";
+import { logError, logInfo } from "./log.js";
 
 // 会话控制：身份校验、绑定切换、文本转发卡片动作。
 // SWITCHING 只存在于内存；持久化的永远是最后一次成功的 Binding。
@@ -24,9 +25,8 @@ function short(id: string): string {
   return id.length <= 6 ? `…${id}` : `…${id.slice(-6)}`;
 }
 
-function logErr(scope: string, err: unknown): void {
-  const kind = err instanceof Error ? err.name : typeof err;
-  console.error(`[session] ${scope} failed (${kind})`);
+function logErr(scope: string, err: unknown, sensitive: readonly string[] = []): void {
+  logError("session.failed", err, { scope }, sensitive);
 }
 
 export async function createSession(deps: SessionDeps): Promise<SessionController> {
@@ -88,7 +88,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     try {
       await feishu.sendText(chatId, text);
     } catch (err) {
-      logErr(`sendText to ${short(chatId)}`, err);
+      logErr(`sendText to ${short(chatId)}`, err, [text]);
     }
   }
 
@@ -174,49 +174,66 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   }
 
   async function handleText(msg: IncomingText): Promise<void> {
-    if (closed) return;
-    // 身份/渠道校验：不通过则静默忽略，不泄露任何会话信息。
-    if (msg.senderId !== ownerOpenId || msg.chatType !== "p2p") return;
+    if (closed) {
+      logInfo("session.message.ignored", { messageId: msg.messageId, reason: "closed" });
+      return;
+    }
+    // 身份/渠道校验：不通过只记诊断日志，不向发送者回复会话信息。
+    if (msg.senderId !== ownerOpenId || msg.chatType !== "p2p") {
+      logInfo("session.message.ignored", { messageId: msg.messageId, reason: "unauthorized" });
+      return;
+    }
     // 去重放在入口：未绑定/切换中/命令这些不转发的消息也要记一笔，
     // 否则重投后已绑定，它们会被当成普通提示词转给 Agent（A01/A10）。
-    if (state.deliveries[msg.messageId]) return;
+    if (state.deliveries[msg.messageId]) {
+      logInfo("session.message.ignored", { messageId: msg.messageId, reason: "duplicate", deliveryState: state.deliveries[msg.messageId]?.state });
+      return;
+    }
     const consume = async (): Promise<void> => {
       state.deliveries[msg.messageId] = { state: "rejected", at: now() };
       try {
+        logInfo("session.consume.started", { messageId: msg.messageId });
         await enqueueSave();
+        logInfo("session.consume.succeeded", { messageId: msg.messageId });
       } catch (err) {
         logErr("save consumed", err);
       }
     };
     if (msg.rawContentType !== "text") {
+      logInfo("session.routed", { messageId: msg.messageId, action: "unsupported_content_type" });
       await consume();
       await safeSendText(msg.chatId, "仅支持文本消息，其他类型暂不支持。");
       return;
     }
     const cmd = msg.text.trim();
     if (cmd === "/sessions") {
+      logInfo("session.routed", { messageId: msg.messageId, action: "picker" });
       await consume();
       await sendPicker(msg.chatId);
       return;
     }
     if (cmd === "/status") {
+      logInfo("session.routed", { messageId: msg.messageId, action: "status", bound: Boolean(state.binding?.agentId), paseoConnected: paseo.isReady() });
       await consume();
       await sendStatus(msg.chatId);
       return;
     }
     if (switching) {
+      logInfo("session.routed", { messageId: msg.messageId, action: "switching" });
       await consume();
       await safeSendText(msg.chatId, "切换中：此消息未发送，请切换后重发。");
       return;
     }
     const agentId = state.binding?.agentId;
     if (!agentId) {
+      logInfo("session.routed", { messageId: msg.messageId, action: "picker", reason: "unbound" });
       await consume();
       await sendPicker(msg.chatId);
       return;
     }
     // 同一原子快照的目标：此后不再重新读取绑定。
     const targetAgentId = agentId;
+    logInfo("session.routed", { messageId: msg.messageId, action: "forward", agentId: short(agentId), paseoConnected: paseo.isReady() });
     const targetChatId = msg.chatId;
     const body = msg.text;
     state.deliveries[msg.messageId] = { state: "claimed", at: now() };
@@ -239,10 +256,11 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     try {
       result = await paseo.send(targetAgentId, body);
     } catch (err) {
-      logErr(`send to ${short(targetAgentId)}`, err);
+      logErr(`send to ${short(targetAgentId)}`, err, [body]);
       result = { ok: false, reason: "unknown" };
     }
     const outcome = recordDelivery(msg.messageId, result);
+    logInfo("session.forward.result", { messageId: msg.messageId, agentId: short(targetAgentId), outcome });
     try {
       await enqueueSave();
     } catch (err) {

@@ -1,6 +1,7 @@
 import { createPaseoClient } from "@getpaseo/client";
 import type { PaseoAgent, PaseoClient } from "@getpaseo/client";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
+import { logError, logInfo } from "./log.js";
 import type {
   AgentStatus,
   AgentSummary,
@@ -149,15 +150,14 @@ export function createPaseoPort(
 
     async connect(): Promise<void> {
       if (closed) return;
+      logInfo("paseo.connect.started");
       try {
         await client.connect();
+        logInfo("paseo.connected", { status: client.getConnectionState().status });
       } catch (err) {
         // 只记录，不抛：contribute 里是 void 调用的，未处理 rejection 会打崩插件进程。
         // 日志里只放 url 与错误，不放密码。
-        console.error(
-          `[paseo-feishu] paseo connect failed url=${config.paseoUrl}:`,
-          err instanceof Error ? err.message : err,
-        );
+        logError("paseo.connect.failed", err, {}, [config.paseoPassword ?? ""]);
       }
     },
 
