@@ -32,7 +32,9 @@ export function createLiveReplies(deps: {
   let ready = false;
   let failed = false;
   let dirty = false;
-  let running = false;
+  // 用 token 而不是布尔值：一次永不返回的读不能把后续会话的刷新也堵死。
+  let activeRead = 0;
+  let readSeq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastRead = -Infinity;
   let lastWrite = -Infinity;
@@ -46,6 +48,20 @@ export function createLiveReplies(deps: {
    * ensureReady 会永远挂着：不发消息、不回复、不报错。
    */
   const READY_TIMEOUT_MS = 10_000;
+
+  /** 写卡/发文字的兜底上限：飞书 API 卡住时不能把收尾永远挂在那里。 */
+  const WRITE_TIMEOUT_MS = 15_000;
+  class WriteTimeout extends Error {}
+  const TIMED_OUT = new WriteTimeout("card write timed out");
+  /** 真的拒绝照原样抛出；只有真的卡住才变成 WriteTimeout。有结果就清掉自己的计时器。 */
+  const bounded = <T>(p: Promise<T>, ms = WRITE_TIMEOUT_MS): Promise<T | WriteTimeout> =>
+    new Promise<T | WriteTimeout>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(TIMED_OUT), ms);
+      p.then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
 
   const valid = (v: number): boolean => version === v;
   function settle(ok: boolean): void {
@@ -76,12 +92,18 @@ export function createLiveReplies(deps: {
     if (now() < lastWrite + 1000) { schedule(); return; }
     t.pending = null;
     t.writing = true;
-    t.write = (async () => {
+    // 写卡也必须封顶：飞书 API 卡住时 writing 不复位，回复卡从此停止更新。
+    t.write = bounded((async () => {
       lastWrite = now();
       const card = cards.reply(view);
       if (t.messageId) await feishu.updateCard(t.messageId, card);
       else t.messageId = await feishu.sendCard(s.chatId, card);
-    })().catch(() => { if (!t.messageId) t.creationFailed = true; }).finally(() => {
+    })()).then((r) => {
+      if (r instanceof WriteTimeout) throw r;
+    }).catch((err: unknown) => {
+      // 超时不等于永久失败：下一帧可以再试一次建卡；真正的拒绝才算创建失败。
+      if (!t.messageId && !(err instanceof WriteTimeout)) t.creationFailed = true;
+    }).finally(() => {
       t.writing = false;
       // Only one replaceable pending frame survives a slow network operation.
       drainWrite(t);
@@ -102,14 +124,14 @@ export function createLiveReplies(deps: {
   function schedule(): void {
     cancelTimer();
     if (!scope) return;
-    const canRead = established && dirty && !running && !failed;
+    const canRead = established && dirty && activeRead === 0 && !failed;
     const canWrite = turn?.pending && !turn.writing;
     if (!canRead && !canWrite) return;
     const due = Math.min(canRead ? lastRead + 1000 : Infinity, canWrite ? lastWrite + 1000 : Infinity);
     const dispatch = (): void => {
       timer = null;
       if (turn?.pending && !turn.writing && now() >= lastWrite + 1000) drainWrite(turn);
-      if (established && dirty && !failed && !running && now() >= lastRead + 1000) void refresh();
+      if (established && dirty && !failed && activeRead === 0 && now() >= lastRead + 1000) void refresh();
       // Due work synchronously clears pending or marks itself in flight; rearm
       // only what remains, including a read deadline later than this write.
       schedule();
@@ -120,8 +142,9 @@ export function createLiveReplies(deps: {
   async function refresh(): Promise<void> {
     const s = scope;
     let v = version;
-    if (!s || !valid(v) || !established || failed || running) return;
-    running = true;
+    if (!s || !valid(v) || !established || failed || activeRead !== 0) return;
+    const token = ++readSeq;
+    activeRead = token;
     dirty = false;
     lastRead = now();
     try {
@@ -166,7 +189,8 @@ export function createLiveReplies(deps: {
     } catch {
       fault(s, v, paseo.isReady() ? "观察中断，状态待核对（不会自动重发）" : "Paseo 未连接，状态待核对");
     } finally {
-      running = false;
+      // 只清自己的 token：旧读晚到时不能把新会话的读取状态一起清掉。
+      if (activeRead === token) activeRead = 0;
       schedule();
     }
   }
@@ -208,6 +232,8 @@ export function createLiveReplies(deps: {
     ++version;
     const attempt = ++observation;
     cancelTimer();
+    // 上一次读可能永远不返回；放行新的读取，旧结果会因 version 不符被丢弃。
+    activeRead = 0;
     subscription?.();
     subscription = null;
     settle(false);
@@ -231,6 +257,8 @@ export function createLiveReplies(deps: {
     ++observation;
     ++contentVersion;
     cancelTimer();
+    // 同 startObservation：未完成的读不再阻止后续刷新。
+    activeRead = 0;
     subscription?.();
     subscription = null;
     settle(false);
@@ -278,19 +306,27 @@ export function createLiveReplies(deps: {
       t.pending = null;
       return {
         async finish(view, reminder) {
-          await t.write;
+          // 上一次进展写卡可能永远不返回；不能让收尾通知跟着一起消失。
+          await bounded(t.write);
           if (!currentScope()) return;
           let finalized = false;
           try {
             const card = cards.reply(view);
             if (t.creationFailed) throw new Error("progress card failed");
-            if (t.messageId) await feishu.updateCard(t.messageId, card);
-            else t.messageId = await feishu.sendCard(s.chatId, card);
-            finalized = true;
+            if (t.messageId) {
+              const sent = await bounded(feishu.updateCard(t.messageId, card));
+              if (sent instanceof WriteTimeout) throw new Error("update timed out");
+              finalized = true;
+            } else {
+              const sent = await bounded(feishu.sendCard(s.chatId, card));
+              if (sent instanceof WriteTimeout) throw new Error("create timed out");
+              t.messageId = sent;
+              finalized = true;
+            }
           } catch { /* Only a failed card operation falls back to the final body. */ }
           if (!currentScope()) return;
           try {
-            await feishu.sendText(s.chatId, finalized ? reminder : `${reminder}${view.text ? `\n${view.text}` : ""}`);
+            await bounded(feishu.sendText(s.chatId, finalized ? reminder : `${reminder}${view.text ? `\n${view.text}` : ""}`));
           } catch { /* At most one attempt, including the short reminder. */ }
         },
       };

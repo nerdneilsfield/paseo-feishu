@@ -23,6 +23,9 @@ import { logError, logInfo } from "./log.js";
 
 let scopeGeneration = 0;
 
+/** 写卡串行链的单次上限：超时后放行下一张卡，不让一次挂起的 API 阻断所有翻页。 */
+const CARD_WRITE_TIMEOUT_MS = 10_000;
+
 function short(id: string): string {
   return `…${id.slice(-6)}`;
 }
@@ -80,11 +83,17 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   }
 
   function paintSessionCard(epoch: number, messageId: string, card: FeishuCard, expectedGeneration: number): Promise<void> {
-    const op = cardWrite.then(async () => {
+    const write = async (): Promise<void> => {
       if (closed || expectedGeneration !== generation || epoch !== sessionCardEpoch) return;
       await feishu.updateCard(messageId, card);
       if (!closed && expectedGeneration === generation) rememberNavigation(messageId, state.binding!.chatId);
-    });
+    };
+    // 串行链必须能自愈：一次挂住的写卡不能把之后所有翻页/刷新都排到天荒地老。
+    const bounded = Promise.race([
+      write(),
+      new Promise<void>(resolve => setTimeout(resolve, CARD_WRITE_TIMEOUT_MS)),
+    ]);
+    const op = cardWrite.then(() => bounded);
     cardWrite = op.catch(() => undefined);
     return op;
   }

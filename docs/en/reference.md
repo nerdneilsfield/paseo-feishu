@@ -96,7 +96,17 @@ The channel checks callback structure and identity once. Session actions check t
 
 **Callback time limit.** Feishu/Lark requires a response to a card click within 3 seconds. If the handler has not answered after 2.5 seconds, the plugin returns a loading toast, so the response stays inside the limit. Other toasts are info, warning, and error. Switching, refreshing, and approving continue in the background, and the plugin updates the card or sends a text reply when they finish.
 
-**No indefinite waiting.** Three time limits keep one stuck call from silencing the chat. A submission waits at most 10 seconds for the live observation to become ready, then reports that it was not sent. Outbound Feishu/Lark REST calls time out after 20 seconds. A text message whose routing throws still gets a reply saying it was not sent. Without the first limit, a subscription handshake that never settles would leave every later message unanswered with no error anywhere.
+**No indefinite waiting.** Every wait on a network call has a ceiling, because one hung call used to silence the chat permanently:
+
+| Wait | Ceiling | What recovers |
+| --- | --- | --- |
+| Live observation becomes ready | 10 s | The submission is refused and says so |
+| One card write (progress, picker, final) | 10–15 s | The next frame writes; a hung create is retried instead of abandoned |
+| One timeline page for `/history` | 10 s | The next `/history` runs instead of queueing forever |
+| Outbound Feishu/Lark REST call | 20 s | SDK-level; without it a hung API blocks the bot |
+| One timeline read for the live card | no ceiling, but rebinding clears it | A new binding refreshes even if the old read never returned |
+
+A text message whose routing throws still gets a reply saying it was not sent. The history and card limits exist because both run inside a serialized chain: without them, one hung call queued every later request behind it, and the bot answered nothing at all.
 
 Card clicks use their own queue, separate from messages. A message handler that is still waiting therefore cannot block an approval or a picker click.
 

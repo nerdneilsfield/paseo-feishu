@@ -14,6 +14,8 @@ import type {
 /** 权限摘要上限：只给操作人看个大概，不带完整命令与输出。 */
 const PERMISSION_SUMMARY_LIMIT = 300;
 const AGENTS_PAGE_LIMIT = 200;
+/** 分页上限：游标不自进时，无限循环会把等待中的飞书 handler 一起拖住。 */
+const AGENTS_PAGE_MAX = 20;
 
 /** cwd 只保留末两级目录名，不暴露完整本机路径。 */
 function cwdLabel(cwd: string): string {
@@ -133,6 +135,7 @@ export function createPaseoPort(
       ensureReady();
       const out: AgentSummary[] = [];
       let cursor: string | undefined;
+      let pages = 0;
       for (;;) {
         const page = await client.agents.list(
           cursor
@@ -143,7 +146,10 @@ export function createPaseoPort(
           if (entry.agent.archivedAt != null) continue;
           out.push(toAgentSummary(entry.agent));
         }
+        // 游标不前进或返回异常多页就不该继续转：调用方在飞书 handler 里等它。
         if (!page.pageInfo.hasMore || !page.pageInfo.nextCursor) break;
+        if (page.pageInfo.nextCursor === cursor) break;
+        if (++pages >= AGENTS_PAGE_MAX) break;
         cursor = page.pageInfo.nextCursor;
       }
       return out;

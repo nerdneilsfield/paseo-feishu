@@ -15,6 +15,9 @@ export class HistoryReadError extends Error {
   }
 }
 
+/** 单页读取上限。串行链上的等待必须有尽头，否则一次挂起的读取会担住后续每一次 /history。 */
+const PAGE_TIMEOUT_MS = 10_000;
+
 export function excerpt(text: string, limit: number): string {
   const marker = "\n[摘录已截断，请回 Paseo 查看完整内容]";
   return text.length > limit ? text.slice(0, limit - marker.length) + marker : text;
@@ -31,12 +34,18 @@ export async function readHistory(
     ? { ...previous, buffer: [...previous.buffer] }
     : { epoch: null, cursor: null, hasOlder: true, boundary: Infinity, buffer: [] };
   for (let count = 0; position.buffer.length < 10 && position.hasOlder && count < 5; count++) {
-    const page = await paseo.readTimeline(scope.agentId, {
+    // 调用方在串行链上等这个 promise：一页读不回来就不能让后续 /history 永远排队。
+    const pending = paseo.readTimeline(scope.agentId, {
       direction: position.epoch === null ? "tail" : "before",
       ...(position.cursor ? { cursor: position.cursor } : {}),
       projection: "projected",
       limit: 50,
     });
+    const page = await Promise.race([
+      pending,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), PAGE_TIMEOUT_MS)),
+    ]);
+    if (page === null) throw new HistoryReadError("历史读取超时，请稍后重试。");
     if (!isCurrent()) return null;
     if (page.error) throw new HistoryReadError("历史读取失败，请稍后重试。");
     if (page.staleCursor || page.reset || (position.epoch !== null && position.epoch !== page.epoch)) {
