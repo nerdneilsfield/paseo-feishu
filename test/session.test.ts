@@ -627,6 +627,23 @@ describe("session: permissions (A07)", () => {
     expect(fx.paseo.responds).toEqual([{ agentId: "a1", requestId: "req-1", decision: "allow" }]);
   });
 
+  it("a resolved hook arriving during a local submission does not relabel it as handled elsewhere", async () => {
+    const fx = await boundWithPending();
+    let open!: () => void;
+    fx.paseo.respondGate = new Promise<void>((r) => void (open = r));
+    await fx.session.handleCardAction(approveEvt(fx));
+    await vi.waitFor(() => expect(fx.paseo.responds).toHaveLength(1));
+
+    // 用户刚点「允许」，daemon 的 permission_resolved 先到：这次就是本地下发的，
+    // 不能写成 resolved_elsewhere，否则卡片会被改成“已在 Paseo 处理”。
+    expect(await fx.session.markPermissionDecided("req-1", "resolved_elsewhere")).toBe(false);
+
+    open();
+    await vi.waitFor(() => expect(fx.feishu.updates.length).toBeGreaterThan(0));
+    const st = await createFileStore(fx.storePath).load();
+    expect(st.decidedPermissions["req-1"]?.decision).toBe("allow");
+  });
+
   it("a failed respond releases the slot so the user can retry", async () => {
     const fx = await boundWithPending();
     fx.paseo.respondResult = { ok: false, reason: "failed" };

@@ -1,3 +1,4 @@
+import { RECORD_LIMIT } from "./contracts.js";
 import type {
   AgentSummary,
   BindingScope,
@@ -83,17 +84,19 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   }
 
   function paintSessionCard(epoch: number, messageId: string, card: FeishuCard, expectedGeneration: number): Promise<void> {
-    const write = async (): Promise<void> => {
-      if (closed || expectedGeneration !== generation || epoch !== sessionCardEpoch) return;
-      await feishu.updateCard(messageId, card);
-      if (!closed && expectedGeneration === generation) rememberNavigation(messageId, state.binding!.chatId);
-    };
     // 串行链必须能自愈：一次挂住的写卡不能把之后所有翻页/刷新都排到天荒地老。
-    const bounded = Promise.race([
-      write(),
-      new Promise<void>(resolve => setTimeout(resolve, CARD_WRITE_TIMEOUT_MS)),
-    ]);
-    const op = cardWrite.then(() => bounded);
+    // 同时 RPC 只能在轮到自己时才发：提前调用 write() 会让两次点击并发写同一张卡，
+    // epoch 只能拦住还没开始的写入，拦不住已经上路的请求。
+    const op = cardWrite.then(() => {
+      if (closed || expectedGeneration !== generation || epoch !== sessionCardEpoch) return;
+      return Promise.race([
+        (async () => {
+          await feishu.updateCard(messageId, card);
+          if (!closed && expectedGeneration === generation) rememberNavigation(messageId, state.binding!.chatId);
+        })(),
+        new Promise<void>(resolve => setTimeout(resolve, CARD_WRITE_TIMEOUT_MS)),
+      ]);
+    });
     cardWrite = op.catch(() => undefined);
     return op;
   }
@@ -263,12 +266,26 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     }
   }
 
+  /** 内存里的去重表也要封顶：只在落盘时裁剪会让长时间运行越走越慢。 */
+  function trimInMemory(): void {
+    const deliveries = Object.keys(state.deliveries);
+    if (deliveries.length > RECORD_LIMIT) {
+      for (const key of deliveries.slice(0, deliveries.length - RECORD_LIMIT)) delete state.deliveries[key];
+    }
+    const decided = Object.keys(state.decidedPermissions);
+    if (decided.length > RECORD_LIMIT) {
+      for (const key of decided.slice(0, decided.length - RECORD_LIMIT)) delete state.decidedPermissions[key];
+    }
+    if (state.notified.length > RECORD_LIMIT) state.notified.splice(0, state.notified.length - RECORD_LIMIT);
+  }
+
   function recordDelivery(
     messageId: string,
     result: SendResult,
   ): "accepted" | Exclude<SendResult, { ok: true }>["reason"] {
     if (result.ok) {
       state.deliveries[messageId] = { state: "accepted", at: now() };
+      trimInMemory();
       return "accepted";
     }
     const mapped = result.reason === "not_connected" ? "rejected" : result.reason;
@@ -276,6 +293,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       state: result.reason === "unknown" ? "unknown" : "rejected",
       at: now(),
     };
+    trimInMemory();
     return mapped;
   }
 
@@ -561,7 +579,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
           }
           if (!res.ok) {
             if (res.reason === "not_pending") {
-              await markPermissionDecided(requestId, "resolved_elsewhere");
+              await markPermissionDecided(requestId, "resolved_elsewhere", "local");
               await safeSendText(targetChat, "该请求已处理。");
               return;
             }
@@ -569,6 +587,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
             return;
           }
           state.decidedPermissions[requestId] = { decision, at: now() };
+          trimInMemory();
           try {
             await enqueueSave();
           } catch (err) {
@@ -622,6 +641,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
     if (closed) return false;
     if (state.notified.some((n) => n.key === key)) return false;
     state.notified.push({ key, at: now() });
+    trimInMemory();
     try {
       await enqueueSave();
     } catch (err) {
@@ -633,10 +653,15 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   async function markPermissionDecided(
     requestId: string,
     decision: "allow" | "deny" | "resolved_elsewhere",
+    origin: "local" | "external" = "external",
   ): Promise<boolean> {
     if (closed) return false;
     if (state.decidedPermissions[requestId]) return false;
+    // 外部 resolved 事件到达时，若这次提交正由本地下发，就不是“已在别处处理”。
+    // 本地自己的 not_pending 记录要放行，所以由调用方声明来源。
+    if (origin === "external" && inFlightPermissions.has(requestId)) return false;
     state.decidedPermissions[requestId] = { decision, at: now() };
+    trimInMemory();
     try {
       await enqueueSave();
     } catch (err) {
