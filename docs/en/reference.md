@@ -101,10 +101,12 @@ The channel checks callback structure and identity once. Session actions check t
 | Wait | Ceiling | What recovers |
 | --- | --- | --- |
 | Live observation becomes ready | 10 s | The submission is refused and says so |
-| One card write (progress, picker, final) | 10–15 s | The next frame writes; a hung create is retried instead of abandoned |
+| One card write (progress, picker, final) | 10–15 s | The next frame writes; a hung create is retried instead of abandoned; a stale progress frame cannot repaint a sealed card |
 | One timeline page for `/history` | 10 s | The next `/history` runs instead of queueing forever |
 | Outbound Feishu/Lark REST call | 20 s | SDK-level; without it a hung API blocks the bot |
-| One timeline read for the live card | no ceiling, but rebinding clears it | A new binding refreshes even if the old read never returned |
+| One timeline read for the live card | 20 s | The read slot is released and the card marks its state as unverified; the next frame reads again |
+
+The final-answer read-back has the same 15 s ceiling. When it times out, fails, or only reaches the tail of a long turn, the card says the result is incomplete rather than showing 「暂无公开助手内容」 for a read that merely failed.
 
 A text message whose routing throws still gets a reply saying it was not sent. The history and card limits exist because both run inside a serialized chain: without them, one hung call queued every later request behind it, and the bot answered nothing at all.
 

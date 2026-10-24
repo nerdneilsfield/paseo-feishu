@@ -41,11 +41,15 @@ export async function readHistory(
       projection: "projected",
       limit: 50,
     });
-    const page = await Promise.race([
-      pending,
-      new Promise<null>(resolve => setTimeout(() => resolve(null), PAGE_TIMEOUT_MS)),
-    ]);
-    if (page === null) throw new HistoryReadError("历史读取超时，请稍后重试。");
+    const TIMEOUT = Symbol("timeout");
+    const page = await new Promise<TimelinePage | typeof TIMEOUT>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(TIMEOUT), PAGE_TIMEOUT_MS);
+      pending.then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
+    if (page === TIMEOUT) throw new HistoryReadError("历史读取超时，请稍后重试。");
     if (!isCurrent()) return null;
     if (page.error) throw new HistoryReadError("历史读取失败，请稍后重试。");
     if (page.staleCursor || page.reset || (position.epoch !== null && position.epoch !== page.epoch)) {

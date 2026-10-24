@@ -41,22 +41,35 @@ function lastAssistantText(
   return excerpt(parts.reverse().join(""), 12000);
 }
 
+/** 回读的总体上限：hook 已封口，这一次挂住就等于卡片停在“处理中”且没有完成提醒。 */
+const READ_BACK_TIMEOUT_MS = 15_000;
+/** 最多向前翻 10 页（1000 条）。 */
+const READ_BACK_MAX_PAGES = 10;
+
+interface FinalText {
+  text: string;
+  /** 文本不可信或不完整：回读报错、没翻到本轮起点、或只能靠无 turnId 的条目凑。 */
+  incomplete: boolean;
+}
+
 /**
  * 0.13 起 agent.turn_ended 的 timeline 恒为空，最终答复要按 turnId 自己回读。
- * shortcut: 最多向前翻 10 页（1000 条）；更长的轮次只取到尾部那部分答复。
  */
 async function readFinalText(
   paseo: PaseoApi,
   agentId: string,
   turnId: string,
-): Promise<string> {
+): Promise<FinalText> {
   const timeline = paseo.agents.ref(agentId).timeline;
   const own = new Map<number, AgentTimelineItem>();
   // 同一页会混入 turnId 缺失的条目：fork、历史回放、压缩都产生过。
-  // 本轮没有正文时拿它们兑底，否则卡片会显示「暂无公开助手内容」。
+  // 本轮没有正文时拿它们兑底，但那不能算“本轮答复”，必须标为不完整。
   const idless = new Map<number, AgentTimelineItem>();
   let cursor: { epoch: string; seq: number } | undefined;
-  for (let page = 0; page < 10; page++) {
+  // 翻满页数仍没遇到本轮起点：只拿到了尾部，正文可能是残缺的。
+  let truncated = false;
+  for (let page = 0; ; page++) {
+    if (page >= READ_BACK_MAX_PAGES) { truncated = true; break; }
     const result = await timeline.refetch({
       direction: cursor ? "before" : "tail",
       ...(cursor ? { cursor } : {}),
@@ -79,14 +92,17 @@ async function readFinalText(
       throw new Error("timeline cursor did not advance");
     }
     cursor = result.startCursor;
+    // 本轮一条条目都没有时不要扫完全部页数：那些内容也不可能属于本轮。
+    if (own.size === 0 && page >= 1) { truncated = true; break; }
   }
   const ordered = (from: Map<number, AgentTimelineItem>): AgentTimelineItem[] =>
     [...from.entries()].sort((a, b) => a[0] - b[0]).map(([, item]) => item);
   const text = lastAssistantText(ordered(own));
-  if (text) return text;
+  if (text) return { text, incomplete: truncated };
   // 本轮一条正文都没拿到：如实记录下来，别让下次只能靠猜。
   logInfo("turn_ended.read.empty", { agentId, turnId, matched: own.size, idless: idless.size });
-  return lastAssistantText(ordered(idless));
+  // 兑底文本的出处无法证实是本轮，永远标为不完整。
+  return { text: lastAssistantText(ordered(idless)), incomplete: true };
 }
 
 export function registerNotifications(server: PluginServerContext, deps: NotificationDeps): void {
@@ -108,15 +124,25 @@ export function registerNotifications(server: PluginServerContext, deps: Notific
     const reminder = `${title} · ${phase}${reason ? `：${reason}` : ""}`;
     // 回读走后台：hook 不能等一次 timeline RPC，卡片回调那边还有 3 秒预算。
     void (async () => {
-      const text = await readFinalText(context.paseo, agentId, turnId).catch((err: unknown) => {
-        logError("turn_ended read final text failed", err);
-        return "";
-      });
+      // 回读自己也要封顶：seal 已封口，这次挂住就等于卡片停在“处理中”且没有完成提醒。
+      // 超时或报错都按“结果不完整”处理，不用“暂无内容”冒充真实答复。
+      const result = await Promise.race([
+        readFinalText(context.paseo, agentId, turnId).catch((err: unknown) => {
+          logError("turn_ended read final text failed", err);
+          return { text: "", incomplete: true };
+        }),
+        new Promise<FinalText>((resolve) =>
+          setTimeout(() => {
+            logError("turn_ended read final text timed out", new Error("timeout"));
+            resolve({ text: "", incomplete: true });
+          }, READ_BACK_TIMEOUT_MS),
+        ),
+      ]);
       // A late end event gets its own message; it must not seal or repaint the new turn.
       if (finish) {
-        await finish.finish({ title, phase, reason, updatedAt: Date.now(), text, incomplete: false }, reminder);
+        await finish.finish({ title, phase, reason, updatedAt: Date.now(), text: result.text, incomplete: result.incomplete }, reminder);
       } else {
-        await deps.feishu.sendText(scope.chatId, `${reminder}（轮次 ${turnId.slice(0, 8)}）${text ? `\n${text}` : ""}`);
+        await deps.feishu.sendText(scope.chatId, `${reminder}（轮次 ${turnId.slice(0, 8)}）${result.text ? `\n${result.text}` : ""}`);
       }
     })().catch((err) => logError("turn_ended notify failed", err));
   });

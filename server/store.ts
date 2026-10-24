@@ -1,10 +1,8 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
-import { emptyState, StoreCorruptError } from "./contracts.js";
+import { emptyState, RECORD_LIMIT, StoreCorruptError } from "./contracts.js";
 import type { PersistedState, Store } from "./contracts.js";
-
-const RECORD_LIMIT = 500;
 
 const bindingSchema = z.object({
   chatId: z.string(),

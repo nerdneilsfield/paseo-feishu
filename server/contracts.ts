@@ -61,6 +61,9 @@ export interface NotifiedMarker {
   at: number;
 }
 
+/** 去重记录的容量上限；内存与落盘用同一个值，避免只在写文件时裁剪。 */
+export const RECORD_LIMIT = 500;
+
 /** 持久化的全部内容。不得包含 transcript、权限命令全文、密码、App Secret。 */
 export interface PersistedState {
   version: 1;
@@ -229,9 +232,13 @@ export interface SessionController {
   isCurrentScope(scope: BindingScope): boolean;
   /** 通知/审批幂等记录。返回 true 表示首次（应当发送），false 表示已处理过。 */
   markNotified(key: string): Promise<boolean>;
+  /**
+   * origin 区分来源：本地正在提交时，外部的 resolved 事件不应把这次审批记成“已在别处处理”。
+   */
   markPermissionDecided(
     requestId: string,
     decision: "allow" | "deny" | "resolved_elsewhere",
+    origin?: "local" | "external",
   ): Promise<boolean>;
   /** 停止接收新事务并等待在途写盘完成。 */
   close(): Promise<void>;
