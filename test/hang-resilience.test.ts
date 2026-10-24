@@ -178,3 +178,45 @@ describe("a hung picker update", () => {
     await session.close();
   }, 25_000);
 });
+
+describe("a hung read on the current binding", () => {
+  it("does not freeze the card forever once the first read succeeded", async () => {
+    vi.useFakeTimers();
+    try {
+      // 第二次读取挂住：首次已就绪，ensureReady 会直接放行，正是盲点所在。
+      let n = 0;
+      const reads = vi.fn(() =>
+        ++n === 2 ? never<TimelinePage>() : Promise.resolve(runningPage(`p${n}`)),
+      );
+      let listener!: (e: unknown) => void;
+      const unsubscribe = Object.assign(vi.fn(), {
+        ready: Promise.resolve(), subscriptionId: "s", release: async () => {},
+      });
+      const paseo = {
+        isReady: () => true,
+        readTimeline: reads,
+        subscribeTimeline: vi.fn((_id: string, cb: (e: unknown) => void) => { listener = cb; return unsubscribe; }),
+      };
+      const feishu = feishuPort();
+      const scope: BindingScope = { generation: 1, agentId: "a", chatId: "c" };
+      const l = createLiveReplies({
+        paseo: paseo as unknown as PaseoPort, feishu: feishu as never, cards,
+        isCurrent: () => true, invalidateHistory() {},
+      });
+      l.bind(scope);
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(await l.ensureReady(scope)).toBe(true);
+      // 触发第二次读（会挂住）
+      listener({ agentId: "a", event: { type: "timeline", provider: "p", item: { type: "assistant_message", text: "x" } } });
+      await vi.advanceTimersByTimeAsync(1200);
+      const afterHang = reads.mock.calls.length;
+      expect(afterHang).toBe(2);
+      // 读上限（20s）之后必须释放读取槽：新事件要能再触发一次读取，而不是永久冻结
+      await vi.advanceTimersByTimeAsync(25_000);
+      listener({ agentId: "a", event: { type: "timeline", provider: "p", item: { type: "assistant_message", text: "y" } } });
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(reads.mock.calls.length).toBeGreaterThan(afterHang);
+      l.close();
+    } finally { vi.useRealTimers(); }
+  });
+});

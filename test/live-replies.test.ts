@@ -489,3 +489,25 @@ describe("subscribe handshake never settles", () => {
     live.close();
   });
 });
+
+describe("tool phase does not stick", () => {
+  it("returns to 处理中 once an assistant message follows the tool call", async () => {
+    // 快照尾部就是未完成的工具调用：卡片应显示“正在使用工具”
+    const t = setup(page("", { entries: [
+      { provider: "codex", turnId: "t", timestamp: "n", seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [],
+        item: { type: "tool_call", status: "running" } },
+    ] } as never));
+    t.established.resolve(); await flush();
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls.at(-1))).toContain("正在使用工具");
+
+    // 工具跑完后正文继续产出：阶段必须回到“处理中”，不能一直粘在工具上
+    t.read.mockResolvedValue(page("工具结果已拿到"));
+    t.event({ type: "timeline", provider: "codex", item: { type: "assistant_message", text: "工具结果已拿到" } });
+    await vi.advanceTimersByTimeAsync(2000);
+    const latest = JSON.stringify(t.feishu.updateCard.mock.calls.at(-1));
+    expect(latest).toContain("处理中");
+    expect(latest).not.toContain("正在使用工具");
+    t.live.close();
+  });
+});

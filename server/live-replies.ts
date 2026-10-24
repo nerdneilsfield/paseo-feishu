@@ -1,4 +1,4 @@
-import type { BindingScope, CardBuilders, FeishuPort, LiveFinish, LiveReplies, PaseoPort, ReplyView, TimelineEvent, TimelineSubscription } from "./contracts.js";
+import type { BindingScope, CardBuilders, FeishuPort, LiveFinish, LiveReplies, PaseoPort, ReplyView, TimelineEvent, TimelinePage, TimelineSubscription } from "./contracts.js";
 import { excerpt } from "./history.js";
 
 interface Turn {
@@ -63,6 +63,20 @@ export function createLiveReplies(deps: {
       );
     });
 
+  class ReadTimeout extends Error {}
+  /**
+   * 读卡住时必须自己放弃：不释放读取槽的话，完成首次观测之后的一次挂起
+   * 会让当前绑定再也拿不到新快照（ensureReady 已 ready，提交照常成功，但看不到进展）。
+   */
+  const readWithTimeout = async (p: Promise<TimelinePage>): Promise<TimelinePage> =>
+    new Promise<TimelinePage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new ReadTimeout("timeline read timed out")), READ_TIMEOUT_MS);
+      p.then(
+        (page) => { clearTimeout(timer); resolve(page); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
+
   const valid = (v: number): boolean => version === v;
   function settle(ok: boolean): void {
     for (const timer of waiterTimers) clearTimeout(timer);
@@ -96,8 +110,15 @@ export function createLiveReplies(deps: {
     t.write = bounded((async () => {
       lastWrite = now();
       const card = cards.reply(view);
-      if (t.messageId) await feishu.updateCard(t.messageId, card);
-      else t.messageId = await feishu.sendCard(s.chatId, card);
+      // 排队期间本轮可能已封口：再更新会把“已完成”的卡覆盖回“处理中”。
+      // 建卡不同——收尾正需要这个 id 才能复用同一张卡，只有已经建过卡才跳过。
+      if (t.messageId) {
+        if (t.sealed) return;
+        await feishu.updateCard(t.messageId, card);
+      } else {
+        const created = await feishu.sendCard(s.chatId, card);
+        if (!t.messageId) t.messageId = created;
+      }
     })()).then((r) => {
       if (r instanceof WriteTimeout) throw r;
     }).catch((err: unknown) => {
@@ -139,6 +160,9 @@ export function createLiveReplies(deps: {
     if (due <= now()) dispatch();
     else timer = setTimeout(dispatch, due - now());
   }
+  /** 单次快照读取的上限。读不回来就必须释放读取槽，否则当前绑定永久停更。 */
+  const READ_TIMEOUT_MS = 20_000;
+
   async function refresh(): Promise<void> {
     const s = scope;
     let v = version;
@@ -149,7 +173,10 @@ export function createLiveReplies(deps: {
     lastRead = now();
     try {
       // One bounded projected tail. Older records outside this window are explicitly incomplete.
-      const page = await paseo.readTimeline(s.agentId, { direction: "tail", projection: "projected", limit: 50 });
+      // 超时后旧请求可能仍在路上；它的结果会因 version/token 不符被丢弃。
+      const page = await readWithTimeout(
+        paseo.readTimeline(s.agentId, { direction: "tail", projection: "projected", limit: 50 }),
+      );
       if (!valid(v)) return;
       if (page.error) throw new Error("snapshot unavailable");
       if (epoch !== null && epoch !== page.epoch) {
@@ -177,17 +204,32 @@ export function createLiveReplies(deps: {
         const first = entries[0];
         const incomplete = !turn.id || publicEntries.some(e => !e.turnId) || page.gap || page.reset || page.staleCursor || page.hasNewer || (page.hasOlder && (!first || first.turnId === turn.id));
         const pending = page.agent?.pendingPermissions;
+        // 工具阶段不能粘住：只有快照里最后一个活动项仍是未完成的工具调用，
+        // 才显示“正在使用工具”。否则工具早跑完、正文一直在长，标题却还写着在跑工具。
+        const lastActive = entries.at(-1)?.item;
+        const toolRunning = lastActive?.type === "tool_call" && lastActive.status !== "completed";
         const phase = pending?.length
           ? pending.some(p => p.kind === "question") ? "等待回答（请回 Paseo）" : "等待授权"
-          : turn.view.phase === "正在使用工具" ? "正在使用工具" : "处理中";
+          : toolRunning ? "正在使用工具" : "处理中";
         turn.view = { ...turn.view, phase, title: page.agent?.title ?? turn.view.title, text: excerpt(text, 12000), incomplete };
         paint(turn, s, v);
       }
       // A valid reconciliation releases submissions even if newer events need another frame.
       ready = true;
       settle(true);
-    } catch {
-      fault(s, v, paseo.isReady() ? "观察中断，状态待核对（不会自动重发）" : "Paseo 未连接，状态待核对");
+    } catch (err) {
+      if (err instanceof ReadTimeout) {
+        // 读超时只释放读取槽：订阅本身没坏，下一拍应当能重新读。
+        // 整体 fault 会让 failed=true 永久停读，那比卡住更难恢复。
+        // 但用户要能看到“状态待核对”，所以降级当前卡片文案再继续重读。
+        dirty = true;
+        if (turn && !turn.sealed) {
+          turn.view = { ...turn.view, phase: "处理中", incomplete: true, updatedAt: now() };
+          paint(turn, s, v);
+        }
+      } else {
+        fault(s, v, paseo.isReady() ? "观察中断，状态待核对（不会自动重发）" : "Paseo 未连接，状态待核对");
+      }
     } finally {
       // 只清自己的 token：旧读晚到时不能把新会话的读取状态一起清掉。
       if (activeRead === token) activeRead = 0;
@@ -223,6 +265,8 @@ export function createLiveReplies(deps: {
       }
       if (turn && !turn.sealed && e.type === "permission_resolved") turn.view.phase = "处理中";
       if (turn && !turn.sealed && e.type === "timeline" && e.item.type === "tool_call") turn.view.phase = "正在使用工具";
+      // 工具之后的正文说明工具已经产出结果，阶段该回到“处理中”。
+      if (turn && !turn.sealed && e.type === "timeline" && e.item.type === "assistant_message") turn.view.phase = "处理中";
     }
     if (turn && !turn.sealed) turn.view.updatedAt = now();
     dirty = true;
