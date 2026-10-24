@@ -271,6 +271,16 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
   }
 
   async function handleText(msg: IncomingText): Promise<void> {
+    try {
+      await routeText(msg);
+    } catch (err) {
+      // 没有这一层，handler 抛错就等于消息凭空消失：用户看不到任何回应。
+      logErr(`handleText ${short(msg.messageId)}`, err, [msg.text]);
+      await safeSendText(msg.chatId, "处理这条消息时出错，未发送，请稍后重试。");
+    }
+  }
+
+  async function routeText(msg: IncomingText): Promise<void> {
     if (closed) {
       logInfo("session.message.ignored", { messageId: msg.messageId, reason: "closed" });
       return;
@@ -462,7 +472,7 @@ export async function createSession(deps: SessionDeps): Promise<SessionControlle
       return toast("warning", "卡片已过期，请重新打开");
     }
     // 列表查询和卡片更新都是网络调用。卡片回调必须在 3 秒内返回，
-    // 而且 chatQueue 要等 handler 结束才放行下一条，所以这里只做同步校验。
+    // 所以这里只做同步校验，耗时工作放后台。
     const chatId = binding.chatId;
     const pickerRevision = binding.pickerRevision;
     const currentAgentId = binding.agentId;

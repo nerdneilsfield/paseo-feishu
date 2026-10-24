@@ -96,6 +96,10 @@ The channel checks callback structure and identity once. Session actions check t
 
 **Callback time limit.** Feishu/Lark requires a response to a card click within 3 seconds. If the handler has not answered after 2.5 seconds, the plugin returns a loading toast, so the response stays inside the limit. Other toasts are info, warning, and error. Switching, refreshing, and approving continue in the background, and the plugin updates the card or sends a text reply when they finish.
 
+**No indefinite waiting.** Three time limits keep one stuck call from silencing the chat. A submission waits at most 10 seconds for the live observation to become ready, then reports that it was not sent. Outbound Feishu/Lark REST calls time out after 20 seconds. A text message whose routing throws still gets a reply saying it was not sent. Without the first limit, a subscription handshake that never settles would leave every later message unanswered with no error anywhere.
+
+Card clicks use their own queue, separate from messages. A message handler that is still waiting therefore cannot block an approval or a picker click.
+
 **Card format.** Cards use card JSON 2.0, which needs Feishu/Lark client version 7.20 or later. Older clients show the card title and an upgrade prompt.
 
 **Update limits.** Feishu/Lark allows a card update only within 14 days of sending the message, and at most 5 updates per second for one message.

@@ -65,7 +65,11 @@ export function createFeishuChannel(
     transport: "websocket",
     policy: { dmMode: "allowlist", dmAllowlist: [ownerOpenId] },
     // 显式声明队列行为：不依赖 SDK 默认值。
-    safety: { chatQueue: { enabled: true, cardActions: "same" } },
+    // cardActions: "separate"：卡片点击不占消息队列。否则一个未返回的 message
+    // handler（例如等待观测就绪）会把后续点击一起堵死。
+    safety: { chatQueue: { enabled: true, cardActions: "separate" } },
+    // 不设上限时，一个卡住的飞书 API 会永久挂住私聊：SDK 文档明写 Unset = no timeout。
+    httpTimeoutMs: 20_000,
   });
 
   const port: FeishuPort = {

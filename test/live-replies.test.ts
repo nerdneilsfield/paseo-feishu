@@ -416,3 +416,76 @@ it("rejects a previous epoch turn", async () => {
   expect(t.feishu.sendText).toHaveBeenCalledWith("c", "current complete");
   t.live.close();
 });
+
+
+// 死锁回归：飞书 chatQueue 会等 handler 的 promise。ensureReady 一旦永不返回，
+// 私聊就再也不处理后续消息——表现为「发了消息完全没反应」。
+describe("ensureReady never hangs (deadlock regression)", () => {
+  it("read 一直挂起时 ensureReady 也必须超时返回 false，否则整个 chatQueue 死锁", async () => {
+    let listener!: (e: TimelineEvent) => void;
+    const ready = Promise.resolve();
+    const unsubscribe = Object.assign(vi.fn(), { ready, subscriptionId: "s", release: async () => {} });
+    // readTimeline 永不 resolve：模拟 daemon 半死
+    const hangs = new Promise<TimelinePage>(() => {});
+    const paseo = {
+      isReady: () => true,
+      readTimeline: vi.fn(() => hangs),
+      subscribeTimeline: vi.fn((_id: string, cb: (e: TimelineEvent) => void) => { listener = cb; return unsubscribe; }),
+    };
+    const feishu = { sendCard: vi.fn(async () => "c"), updateCard: vi.fn(async () => {}), sendText: vi.fn(async () => {}) };
+    const scope = { generation: 1, agentId: "a", chatId: "c" };
+    const live = createLiveReplies({
+      paseo: paseo as unknown as PaseoPort, feishu, cards: createCardBuilders(),
+      isCurrent: () => true, invalidateHistory() {},
+    });
+    live.bind(scope);
+    await vi.advanceTimersByTimeAsync(10);
+
+    let settled: boolean | undefined;
+    void live.ensureReady(scope).then(v => { settled = v; });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled).toBeDefined();
+    expect(listener).toBeDefined();
+    live.close();
+  });
+});
+
+describe("subscribe handshake never settles", () => {
+  it("ensureReady returns false instead of hanging forever", async () => {
+    const never = new Promise<void>(() => {});
+    const unsubscribe = Object.assign(vi.fn(), { ready: never, subscriptionId: "s", release: async () => {} });
+    const paseo = {
+      isReady: () => true,
+      readTimeline: vi.fn(async () => page()),
+      subscribeTimeline: vi.fn(() => unsubscribe),
+    };
+    const feishu = { sendCard: vi.fn(async () => "c"), updateCard: vi.fn(async () => {}), sendText: vi.fn(async () => {}) };
+    const scope = { generation: 1, agentId: "a", chatId: "c" };
+    const live = createLiveReplies({ paseo: paseo as never, feishu, cards: createCardBuilders(), isCurrent: () => true, invalidateHistory() {} });
+    live.bind(scope);
+    let settled: boolean | undefined;
+    void live.ensureReady(scope).then(v => { settled = v; });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(settled).toBe(false);
+    live.close();
+  });
+
+  it("a failed observation releases every waiter in the same tick", async () => {
+    const never = new Promise<void>(() => {});
+    const unsubscribe = Object.assign(vi.fn(), { ready: never, subscriptionId: "s", release: async () => {} });
+    const paseo = { isReady: () => true, readTimeline: vi.fn(async () => page()), subscribeTimeline: vi.fn(() => unsubscribe) };
+    const feishu = { sendCard: vi.fn(async () => "c"), updateCard: vi.fn(async () => {}), sendText: vi.fn(async () => {}) };
+    const scope = { generation: 1, agentId: "a", chatId: "c" };
+    const live = createLiveReplies({ paseo: paseo as never, feishu, cards: createCardBuilders(), isCurrent: () => true, invalidateHistory() {} });
+    live.bind(scope);
+    let first: boolean | undefined, second: boolean | undefined;
+    void live.ensureReady(scope).then(v => { first = v; });
+    await vi.advanceTimersByTimeAsync(8_000);
+    void live.ensureReady(scope).then(v => { second = v; });
+    await vi.advanceTimersByTimeAsync(9_000);
+    // 观测整体失败：已排队的提交都该立刻知道，而不是各自倒计时到天明。
+    expect(first).toBe(false);
+    expect(second).toBe(false);
+    live.close();
+  });
+});

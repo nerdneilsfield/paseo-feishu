@@ -130,8 +130,11 @@ describe("建通道配置", () => {
     expect(opts["transport"]).toBe("websocket");
     expect(opts["policy"]).toMatchObject({ dmMode: "allowlist", dmAllowlist: [OWNER] });
     const safety = opts["safety"] as { chatQueue: Record<string, unknown> };
-    expect(safety.chatQueue).toMatchObject({ enabled: true, cardActions: "same" });
+    // cardActions: separate —— 卡片点击不能排在一个卡住的 message handler 后面。
+    expect(safety.chatQueue).toMatchObject({ enabled: true, cardActions: "separate" });
     expect(safety.chatQueue["mergeWhileBusy"]).not.toBe(true);
+    // 没有 REST 超时时，一个卡住的飞书 API 会把私聊永久挂住。
+    expect(opts["httpTimeoutMs"]).toBe(20_000);
   });
 });
 

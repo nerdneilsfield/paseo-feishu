@@ -39,9 +39,18 @@ export function createLiveReplies(deps: {
   let turn: Turn | null = null;
   let epoch: string | null = null;
   let waiters: Array<(ok: boolean) => void> = [];
+  const waiterTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  /**
+   * 提交方等观测就绪的上限。订阅握手既不 resolve 也不 reject 时，
+   * ensureReady 会永远挂着：不发消息、不回复、不报错。
+   */
+  const READY_TIMEOUT_MS = 10_000;
 
   const valid = (v: number): boolean => version === v;
   function settle(ok: boolean): void {
+    for (const timer of waiterTimers) clearTimeout(timer);
+    waiterTimers.clear();
     const pending = waiters;
     waiters = [];
     for (const resolve of pending) resolve(ok);
@@ -243,7 +252,16 @@ export function createLiveReplies(deps: {
       if (failed) return false;
       if (ready) return true;
       if (established) { dirty = true; schedule(); }
-      return new Promise<boolean>(resolve => waiters.push(resolve));
+      // 超时按未就绪处理：宁可拒掉这一条并告知用户，也不能让会话永久卡住。
+      return new Promise<boolean>(resolve => {
+        waiters.push(resolve);
+        const timer = setTimeout(() => {
+          waiterTimers.delete(timer);
+          fault(scope ?? s, version, paseo.isReady() ? "观察超时，请稍后重试" : "Paseo 未连接");
+          settle(false);
+        }, READY_TIMEOUT_MS);
+        waiterTimers.add(timer);
+      });
     },
     seal(s, turnId): LiveFinish | null {
       if (!scope || scope.generation !== s.generation || scope.agentId !== s.agentId || scope.chatId !== s.chatId || !turnId || !turn || turn.id !== turnId || turn.sealed) return null;
