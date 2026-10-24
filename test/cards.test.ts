@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { AgentSummary } from "../server/contracts.js";
 import { excerpt } from "../server/history.js";
-import { createCardBuilders } from "../server/cards.js";
+import { createCardBuilders, displayTitle } from "../server/cards.js";
 
 const builders = createCardBuilders();
 
@@ -423,4 +423,36 @@ describe("reading hierarchy", () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0]!.content.split("\n")).toHaveLength(5);
   });
+});
+
+describe("synthetic titles", () => {
+  const FORKED = "<chat-history-summary> Chat history from a previous Paseo agent. Source agent: 你来接着搞";
+
+  test("a forked agent's chat-history title is not shown as the session name", () => {
+    const card = buildWithForkedTitle();
+    const text = collectMarkdown(card);
+    expect(text).not.toContain("chat-history-summary");
+    expect(text).toContain("a1b2c3d4");
+  });
+
+  test("normal titles survive and long ones are shortened", () => {
+    expect(displayTitle("修复登录回调丢失", "fb")).toBe("修复登录回调丢失");
+    expect(displayTitle("", "fb")).toBe("fb");
+    expect(displayTitle(null, "fb")).toBe("fb");
+    expect(displayTitle("长".repeat(200), "fb")).toHaveLength(61);
+  });
+
+  function buildWithForkedTitle(): Record<string, unknown> {
+    return createCardBuilders(() => 0).current({
+      agent: {
+        id: "a1b2c3d4-0000",
+        title: FORKED,
+        provider: "pi",
+        cwdLabel: "oto/cpp",
+        status: "idle",
+        archived: false,
+        lastActivityAt: 0,
+      },
+    });
+  }
 });

@@ -97,6 +97,20 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * fork 出来的 agent 标题就是它的第一条用户消息，也就是整段 <chat-history-summary> 原文。
+ * 那种标题不能直接当卡片标题：既不是给人看的，又长到占满一屏。
+ */
+const SYNTHETIC_TITLE = /<(chat-history-summary|system)[^>]*>/i;
+const TITLE_LIMIT = 60;
+
+export function displayTitle(raw: string | null | undefined, fallback: string): string {
+  const text = oneLine(raw ?? "");
+  if (!text) return fallback;
+  if (SYNTHETIC_TITLE.test(text)) return fallback;
+  return text.length > TITLE_LIMIT ? `${text.slice(0, TITLE_LIMIT)}…` : text;
+}
+
 function formatTime(ts: number): string {
   if (ts <= 0) return "—";
   const d = new Date(ts);
@@ -127,13 +141,14 @@ function sortAgents(agents: AgentSummary[], currentAgentId: string | null): Agen
 }
 
 function agentLine(a: AgentSummary, now: number): string {
-  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${STATUS_TEXT[a.status]}\n目录：${oneLine(a.cwdLabel)}\n最近活动：${formatRelative(a.lastActivityAt, now)}`;
+  const title = displayTitle(a.title, a.id.slice(0, 8));
+  return `**${title}**\n${oneLine(a.provider)} · ${STATUS_TEXT[a.status]}\n目录：${oneLine(a.cwdLabel)}\n最近活动：${formatRelative(a.lastActivityAt, now)}`;
 }
 
 /** 选择卡的一行：标题加元数据。一行一条，免得每个会话占两屏。 */
 function agentRow(a: AgentSummary, now: number): string {
   const meta = [oneLine(a.provider), STATUS_TEXT[a.status], oneLine(a.cwdLabel), formatRelative(a.lastActivityAt, now)];
-  return `**${oneLine(a.title)}**\n${meta.join(" · ")}`;
+  return `**${displayTitle(a.title, a.id.slice(0, 8))}**\n${meta.join(" · ")}`;
 }
 
 function splitRow(content: Record<string, unknown>, action: Record<string, unknown>): Record<string, unknown> {
@@ -161,7 +176,7 @@ export function createCardBuilders(now: () => number = Date.now): CardBuilders {
         body: {
           elements: [
             // 身份行在前、正文在后：手机上一眼就知道这是哪个会话的哪一轮。
-            md(`**${oneLine(input.title).slice(0, 200)}**`),
+            md(`**${displayTitle(input.title, "当前会话")}**`),
             ...(input.reason ? [md(`原因：${input.reason}`)] : []),
             md(input.text || empty),
             ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
@@ -308,7 +323,7 @@ export function createCardBuilders(now: () => number = Date.now): CardBuilders {
         },
         body: {
           elements: [
-            md(`**${oneLine(agentTitle)}**`),
+            md(`**${displayTitle(agentTitle, "当前会话")}**`),
             // 只展示 summary：不带环境变量、完整输出或 Paseo 内部动作 ID。
             md(permission.summary),
             ...actionRows([
@@ -337,7 +352,7 @@ export function createCardBuilders(now: () => number = Date.now): CardBuilders {
           template: "grey",
         },
         body: {
-          elements: [md(`**${oneLine(input.agentTitle)}**\n${outcomeText}`)],
+          elements: [md(`**${displayTitle(input.agentTitle, "当前会话")}**\n${outcomeText}`)],
         },
       };
     },

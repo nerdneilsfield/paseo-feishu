@@ -23,7 +23,7 @@ function setup() {
     }),
   };
   // turn_ended 不再携带 timeline，handler 通过 context.paseo 回读；这里按事件回填条目。
-  type Page = { item: FinalItem; turnId: string; seqStart: number; seqEnd: number }[];
+  type Page = { item: FinalItem; turnId: string | undefined; seqStart: number; seqEnd: number }[];
   let finalEntries: Page = [];
   // 空表示只有一页，测试需要翻页时替换成多页。
   let pages: Page[] | null = null;
@@ -107,10 +107,16 @@ function setup() {
     finalEntries = items.map((item, i) => ({ item, turnId, seqStart: i, seqEnd: i }));
     pages = null;
   };
-  const setPages = (turnId: string, pageItems: (FinalItem & { turnId?: string })[][]) => {
+  // turnId: null 表示该条目确实没有 turnId（fork、历史回放、压缩都会这样）。
+  const setPages = (turnId: string, pageItems: (FinalItem & { turnId?: string | null })[][]) => {
     let seq = 1000;
     pages = pageItems.map((items) =>
-      items.map(({ turnId: own, ...item }) => ({ item, turnId: own ?? turnId, seqStart: seq--, seqEnd: seq })),
+      items.map(({ turnId: own, ...item }) => ({
+        item,
+        turnId: own === null ? undefined : (own ?? turnId),
+        seqStart: seq--,
+        seqEnd: seq,
+      })),
     );
   };
   return { handlers, session, feishu, cards, emit, deps, observe, refetch, hookPaseo, setTimeline, setPages };
@@ -356,4 +362,29 @@ it.each(["failed", "canceled"] as const)("%s preserves a bounded protocol reason
   const fallback = setup(); fallback.feishu.sendCard.mockRejectedValueOnce(new Error("card API"));
   await fallback.emit("agent.turn_ended", event);
   expect(fallback.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", `${reminder}\nfinal body`);
+});
+
+describe("final text fallback", () => {
+  it("falls back to entries without a turnId when the turn itself has no assistant text", async () => {
+    const t = setup();
+    // fork 出来的会话：正文落在没有 turnId 的条目上
+    t.setPages("turn-1", [[{ type: "assistant_message", text: "forked body", turnId: null }]]);
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).toContain("forked body");
+  });
+
+  it("still reports an empty body when neither the turn nor the tail has text", async () => {
+    const t = setup();
+    t.setPages("turn-1", [[{ type: "tool_call", turnId: null }]]);
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", "Relay · 已完成");
+  });
+});
+
+it("a throwing handler still answers instead of going silent", async () => {
+  const t = setup();
+  t.feishu.sendCard.mockRejectedValue(new Error("card API down"));
+  await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+  // 卡片挂了也要有文字回执；绝不能什么都不发。
+  expect(t.feishu.sendText).toHaveBeenCalled();
 });

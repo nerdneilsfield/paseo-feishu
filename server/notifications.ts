@@ -7,7 +7,7 @@ import type {
   PendingPermission,
 } from "./contracts.js";
 import { excerpt } from "./history.js";
-import { logError } from "./log.js";
+import { logError, logInfo } from "./log.js";
 import { toPendingPermission } from "./paseo.js";
 
 /** 记住审批卡位置供 resolved 时更新；有上限，重启后丢失可接受（best-effort）。 */
@@ -52,6 +52,9 @@ async function readFinalText(
 ): Promise<string> {
   const timeline = paseo.agents.ref(agentId).timeline;
   const own = new Map<number, AgentTimelineItem>();
+  // 同一页会混入 turnId 缺失的条目：fork、历史回放、压缩都产生过。
+  // 本轮没有正文时拿它们兑底，否则卡片会显示「暂无公开助手内容」。
+  const idless = new Map<number, AgentTimelineItem>();
   let cursor: { epoch: string; seq: number } | undefined;
   for (let page = 0; page < 10; page++) {
     const result = await timeline.refetch({
@@ -64,6 +67,11 @@ async function readFinalText(
     const entries = result.entries;
     const matched = entries.filter((entry) => entry.turnId === turnId);
     for (const entry of matched) own.set(entry.seqStart, entry.item);
+    if (own.size === 0) {
+      for (const entry of entries) {
+        if (entry.turnId == null) idless.set(entry.seqStart, entry.item);
+      }
+    }
     // 已经拿到本轮的条目，再往前一页全不匹配，说明已经跨过本轮起点。
     if (own.size > 0 && matched.length === 0) break;
     if (!result.hasOlder || !result.startCursor) break;
@@ -72,8 +80,13 @@ async function readFinalText(
     }
     cursor = result.startCursor;
   }
-  const items = [...own.entries()].sort((a, b) => a[0] - b[0]).map(([, item]) => item);
-  return lastAssistantText(items);
+  const ordered = (from: Map<number, AgentTimelineItem>): AgentTimelineItem[] =>
+    [...from.entries()].sort((a, b) => a[0] - b[0]).map(([, item]) => item);
+  const text = lastAssistantText(ordered(own));
+  if (text) return text;
+  // 本轮一条正文都没拿到：如实记录下来，别让下次只能靠猜。
+  logInfo("turn_ended.read.empty", { agentId, turnId, matched: own.size, idless: idless.size });
+  return lastAssistantText(ordered(idless));
 }
 
 export function registerNotifications(server: PluginServerContext, deps: NotificationDeps): void {
