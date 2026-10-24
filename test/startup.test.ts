@@ -88,16 +88,22 @@ describe("real startup assembly with restored session", () => {
       expect(session!.isCurrentScope(second)).toBe(true);
       expect(feishu.sendCard).toHaveBeenCalledOnce();
       const ended = on.mock.calls.find(([name]) => name === "agent.turn_ended")![1];
+      // 0.13 起 hook 的 timeline 恒为空，最终答复经 context.paseo 回读。
       const event = {
-        agent: { id: "a", title: "Running" }, turnId: "t", outcome: { kind: "completed" },
-        timeline: [{ type: "assistant_message", text: "final answer" }],
+        agent: { id: "a", title: "Running" }, turnId: "t", outcome: { kind: "completed" }, timeline: [],
       };
-      await ended(event); await flush();
+      const context = {
+        paseo: { agents: { ref: () => ({ timeline: { refetch: async () => ({
+          ...snapshot,
+          entries: [{ provider: "codex", turnId: "t", timestamp: "now", seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [], item: { type: "assistant_message", text: "final answer" } }],
+        }) } }) } },
+      };
+      await ended(event, context); await flush();
       expect(feishu.updateCard).toHaveBeenCalledOnce();
       expect(JSON.stringify(feishu.updateCard.mock.calls)).toContain("final answer");
       expect(JSON.stringify(feishu.updateCard.mock.calls)).toContain("已完成");
       expect(feishu.sendText).toHaveBeenCalledExactlyOnceWith("c", "Running · 已完成");
-      await ended(event); await flush();
+      await ended(event, context); await flush();
       expect(feishu.updateCard).toHaveBeenCalledOnce();
       expect(feishu.sendText).toHaveBeenCalledOnce();
     } finally {

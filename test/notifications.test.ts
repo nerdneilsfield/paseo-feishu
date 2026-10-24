@@ -10,6 +10,8 @@ import type {
 
 type Handler = (event: never, ctx?: never) => unknown;
 
+type FinalItem = { type: string; text?: string };
+
 function setup() {
   const handlers = new Map<string, Handler>();
   const server = {
@@ -19,6 +21,23 @@ function setup() {
         handlers.delete(name);
       };
     }),
+  };
+  // turn_ended 不再携带 timeline，handler 通过 context.paseo 回读；这里按事件回填条目。
+  type Page = { item: FinalItem; turnId: string; seqStart: number; seqEnd: number }[];
+  let finalEntries: Page = [];
+  // 空表示只有一页，测试需要翻页时替换成多页。
+  let pages: Page[] | null = null;
+  const refetch = vi.fn(async (..._args: unknown[]) => {
+    const body = pages ? (pages.shift() ?? []) : finalEntries;
+    return {
+      error: null,
+      hasOlder: pages !== null && pages.length > 0,
+      startCursor: pages && pages.length > 0 ? { epoch: "e", seq: pages.length } : null,
+      entries: body.map((e) => ({ ...e, timestamp: "t", provider: "codex", sourceSeqRanges: [], collapsed: [] })),
+    };
+  });
+  const hookPaseo = {
+    agents: { ref: vi.fn(() => ({ timeline: { refetch } })) },
   };
   const notified = new Set<string>();
   const decided = new Map<string, string>();
@@ -72,14 +91,29 @@ function setup() {
   const emit = async (name: string, event: unknown) => {
     const h = handlers.get(name);
     if (!h) throw new Error(`no handler for ${name}`);
-    if (name === "agent.turn_ended" && (event as { turnId?: string }).turnId) {
-      observe({ agentId: scope.agentId, event: { type: "turn_started", provider: "codex", turnId: (event as { turnId: string }).turnId } } as TimelineEvent);
+    if (name === "agent.turn_ended") {
+      const e = event as { turnId?: string; timeline?: FinalItem[] };
+      const turnId = e.turnId ?? "turn-1";
+      if (e.turnId) {
+        observe({ agentId: scope.agentId, event: { type: "turn_started", provider: "codex", turnId: e.turnId } } as TimelineEvent);
+      }
+      if (pages === null) setTimeline(turnId, e.timeline ?? []);
     }
-    await h(event as never);
+    await h(event as never, { paseo: hookPaseo } as never);
     // 后台 void task() 留一个 macrotask 让它跑完。
     await new Promise((r) => setTimeout(r, 0));
   };
-  return { handlers, session, feishu, cards, emit, deps, observe };
+  const setTimeline = (turnId: string, items: FinalItem[]) => {
+    finalEntries = items.map((item, i) => ({ item, turnId, seqStart: i, seqEnd: i }));
+    pages = null;
+  };
+  const setPages = (turnId: string, pageItems: (FinalItem & { turnId?: string })[][]) => {
+    let seq = 1000;
+    pages = pageItems.map((items) =>
+      items.map(({ turnId: own, ...item }) => ({ item, turnId: own ?? turnId, seqStart: seq--, seqEnd: seq })),
+    );
+  };
+  return { handlers, session, feishu, cards, emit, deps, observe, refetch, hookPaseo, setTimeline, setPages };
 }
 
 const agent = { id: "agent-1", workspaceId: null, parentAgentId: null, provider: "codex", cwd: "/x", title: "Relay" };
@@ -154,17 +188,62 @@ describe("registerNotifications", () => {
     const t = setup();
     t.observe({ agentId: agent.id, event: { type: "turn_started", provider: "codex", turnId: "turn-2" } } as TimelineEvent);
     const ended = t.handlers.get("agent.turn_ended")!;
-    const old = turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "old result" }]);
-    await ended(old as never);
-    await ended(old as never);
-    expect(t.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", "Relay · 已完成（轮次 turn-1）\nold result");
+    const ctx = { paseo: t.hookPaseo } as never;
+    const old = turnEvent({ kind: "completed" });
+    t.setTimeline("turn-1", [{ type: "assistant_message", text: "old result" }]);
+    await ended(old as never, ctx);
+    await ended(old as never, ctx);
+    await vi.waitFor(() => expect(t.feishu.sendText).toHaveBeenCalledExactlyOnceWith("chat-1", "Relay · 已完成（轮次 turn-1）\nold result"));
     expect(t.feishu.sendCard).not.toHaveBeenCalled();
     expect(t.feishu.updateCard).not.toHaveBeenCalled();
 
-    await ended(turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "new result" }], "turn-2") as never);
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, [{ type: "assistant_message", text: "new result" }], "turn-2"));
     await vi.waitFor(() => expect(t.feishu.sendText).toHaveBeenCalledTimes(2));
     expect(JSON.stringify(t.feishu.sendCard.mock.calls)).toContain("new result");
     expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("old result");
+  });
+
+  it("reads the final answer from timeline.refetch instead of the hook payload", async () => {
+    const t = setup();
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(t.hookPaseo.agents.ref).toHaveBeenCalledWith(agent.id);
+    expect(t.refetch).toHaveBeenCalledWith({ direction: "tail", projection: "projected", limit: 100 });
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", "Relay · 已完成");
+  });
+
+  it("keeps paging backwards until the turn ends", async () => {
+    const t = setup();
+    // 尾页只有工具条目，答案在前一页；第三页已跨过本轮起点。
+    t.setPages("turn-1", [
+      [{ type: "tool_call" }],
+      [{ type: "assistant_message", text: "paged answer" }],
+      [{ type: "assistant_message", text: "previous turn", turnId: "turn-0" }],
+    ]);
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(t.refetch).toHaveBeenCalledTimes(3);
+    expect(t.refetch.mock.calls[1]![0]).toMatchObject({ direction: "before" });
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).toContain("paged answer");
+    expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("previous turn");
+  });
+
+  it("stops at a cursor that does not advance", async () => {
+    const t = setup();
+    t.refetch.mockResolvedValue({
+      error: null,
+      hasOlder: true,
+      startCursor: { epoch: "e", seq: 1 },
+      entries: [],
+    });
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(t.refetch).toHaveBeenCalledTimes(2);
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", "Relay · 已完成");
+  });
+
+  it("still notifies when the history read fails", async () => {
+    const t = setup();
+    t.refetch.mockRejectedValueOnce(new Error("daemon gone"));
+    await t.emit("agent.turn_ended", turnEvent({ kind: "completed" }, []));
+    expect(t.feishu.sendText).toHaveBeenLastCalledWith("chat-1", "Relay · 已完成");
   });
 
   it("permission_resolved 重复到达只处理一次", async () => {
@@ -191,7 +270,7 @@ describe("registerNotifications", () => {
     t.feishu.sendText.mockImplementation(() => new Promise(() => {}));
     const h = t.handlers.get("agent.turn_ended")!;
     const started = Date.now();
-    await h(turnEvent({ kind: "completed" }, []) as never);
+    await h(turnEvent({ kind: "completed" }, []) as never, { paseo: t.hookPaseo } as never);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
@@ -259,6 +338,7 @@ describe("authoritative final content", () => {
     expect(JSON.stringify(t.feishu.sendCard.mock.calls)).not.toContain("old answer");
     expect(t.feishu.sendCard).not.toHaveBeenCalled();
     expect(t.feishu.sendText).not.toHaveBeenCalled();
+    expect(t.refetch).not.toHaveBeenCalled();
   });
 });
 

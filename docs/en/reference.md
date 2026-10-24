@@ -111,6 +111,8 @@ Notifications go only to the currently bound agent. With no bound session, the p
 
 **Live replies.** The plugin updates one card from public assistant messages, at most once per second. The final card shows up to 12,000 characters. If the card fails, a text notification carries the result. A late end event from the currently bound agent gets a separate text result with its turn ID, once; it does not change the current reply card. End events without a turn ID are ignored. Retired cards are not cached.
 
+The end-event payload no longer carries the conversation (Paseo 0.13 sends an empty `timeline`). The final answer is read back by `turnId` through `context.paseo.agents.ref(...).timeline.refetch`, paging backwards at most 10 pages of 100 entries. A turn longer than that yields only the tail of its answer. If the read fails, the notification is sent without body text.
+
 **Approval cards and notice cards.** The plugin builds an approval card with buttons only when the permission kind is a tool call and its actions are exactly one allow and one deny. Every other request gets a notice card that tells you to handle it in Paseo, with no buttons. Examples are free-text questions, plan reviews, mode changes, and requests with more than two actions.
 
 **No retry.** If sending a notification fails, the plugin logs the failure and does not retry. It records each notification's idempotency key before sending, so the same turn of the same agent, or the same permission request, never notifies twice. The cost is that a notification whose sending failed is not resent.
