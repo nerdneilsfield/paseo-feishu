@@ -147,7 +147,7 @@ export function createLiveReplies(deps: {
         const pending = page.agent?.pendingPermissions;
         const phase = pending?.length
           ? pending.some(p => p.kind === "question") ? "等待回答（请回 Paseo）" : "等待授权"
-          : turn.view.phase === "工具活动" ? "工具活动" : "处理中";
+          : turn.view.phase === "正在使用工具" ? "正在使用工具" : "处理中";
         turn.view = { ...turn.view, phase, title: page.agent?.title ?? turn.view.title, text: excerpt(text, 12000), incomplete };
         paint(turn, s, v);
       }
@@ -189,7 +189,7 @@ export function createLiveReplies(deps: {
         }
       }
       if (turn && !turn.sealed && e.type === "permission_resolved") turn.view.phase = "处理中";
-      if (turn && !turn.sealed && e.type === "timeline" && e.item.type === "tool_call") turn.view.phase = "工具活动";
+      if (turn && !turn.sealed && e.type === "timeline" && e.item.type === "tool_call") turn.view.phase = "正在使用工具";
     }
     if (turn && !turn.sealed) turn.view.updatedAt = now();
     dirty = true;

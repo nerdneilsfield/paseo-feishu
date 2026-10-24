@@ -38,12 +38,22 @@ function callbackValue(button: Record<string, unknown>): unknown {
   return callback?.["value"];
 }
 
+/** picker 把每条会话放进 column_set 的左侧列，这里一并收集，保持按文档顺序。 */
 function collectMarkdown(card: Record<string, unknown>): string {
   const body = card["body"] as { elements: Array<Record<string, unknown>> };
-  return body.elements
-    .filter((el) => el["tag"] === "markdown")
-    .map((el) => el["content"] as string)
-    .join("\n");
+  const out: string[] = [];
+  const walk = (nodes: Array<Record<string, unknown>>): void => {
+    for (const node of nodes) {
+      if (node["tag"] === "markdown") out.push(node["content"] as string);
+      else if (node["tag"] === "column_set") {
+        for (const col of node["columns"] as Array<Record<string, unknown>>) {
+          walk(col["elements"] as Array<Record<string, unknown>>);
+        }
+      }
+    }
+  };
+  walk(body.elements);
+  return out.join("\n");
 }
 
 describe("schema 2.0", () => {
@@ -305,5 +315,112 @@ describe("local navigation cards", () => {
       { action: "history_page", latest: false },
       { action: "history_page", latest: true },
     ]));
+  });
+});
+
+describe("reading hierarchy", () => {
+  const NOW = Date.parse("2026-10-24T00:53:00Z");
+  const at = createCardBuilders(() => NOW);
+  const ago = (ms: number) => NOW - ms;
+
+  test("reply puts identity and body before the timestamp", () => {
+    const card = at.reply({
+      title: "修复登录回调丢失",
+      phase: "正在使用工具",
+      updatedAt: ago(125_000),
+      text: "已定位到登录回调。",
+      incomplete: false,
+    });
+    const blocks = (card["body"] as { elements: Array<{ content: string }> }).elements.map((e) => e.content);
+    expect(blocks[0]).toBe("**修复登录回调丢失**");
+    expect(blocks[1]).toBe("已定位到登录回调。");
+    expect(blocks.at(-1)).toBe("最近事件：2 分钟前");
+  });
+
+  test("reply header colour only flags states that need the user", () => {
+    const template = (phase: string): unknown =>
+      (at.reply({ title: "T", phase, updatedAt: NOW, text: "x", incomplete: false }) as {
+        header: { template: string };
+      }).header.template;
+    expect(template("处理中")).toBe("blue");
+    expect(template("等待授权")).toBe("orange");
+    expect(template("等待回答（请回 Paseo）")).toBe("orange");
+    expect(template("已完成")).toBe("green");
+    expect(template("失败")).toBe("red");
+    expect(template("没见过的阶段")).toBe("grey");
+  });
+
+  test("reply distinguishes waiting for first output from a genuinely empty result", () => {
+    const blocks = (phase: string, text: string): string =>
+      JSON.stringify(
+        at.reply({ title: "T", phase, updatedAt: NOW, text, incomplete: false }),
+      );
+    expect(blocks("处理中", "")).toContain("等待公开进展");
+    expect(blocks("已完成", "")).toContain("暂无公开助手内容");
+  });
+
+  test("picker shows one compact line per agent and only the current one lacks a switch button", () => {
+    const card = at.picker({
+      agents: [
+        agent({ id: "a1", title: "甲", status: "running", cwdLabel: "a/b", lastActivityAt: ago(125_000) }),
+        agent({ id: "a2", title: "乙", cwdLabel: "c/d", lastActivityAt: ago(60_000) }),
+      ],
+      page: 0,
+      pickerRevision: 1,
+      currentAgentId: "a1",
+      connected: true,
+    });
+    const text = collectMarkdown(card);
+    expect(text).toContain("codex · 运行中 · a/b · 2 分钟前");
+    expect(text).toContain("codex · 空闲 · c/d · 1 分钟前");
+    const selects = collectButtons(card).filter(
+      (b) => (callbackValue(b) as { action: string }).action === "select_agent",
+    );
+    expect(selects).toHaveLength(1);
+    expect(callbackValue(selects[0]!)).toMatchObject({ agentId: "a2" });
+    expect((selects[0]!["text"] as { content: string }).content).toBe("切换");
+  });
+
+  test("person rows keep their button in the same column as the description", () => {
+    const card = at.picker({
+      agents: [agent({ id: "a1" }), agent({ id: "a2", lastActivityAt: 5 })],
+      page: 0,
+      pickerRevision: 1,
+      currentAgentId: null,
+      connected: true,
+    });
+    const body = card["body"] as { elements: Array<Record<string, unknown>> };
+    // 会话行是「左列 markdown + 右列一个元素」，无论那个元素是按钮还是「当前」标记。
+    const rows = body.elements.filter((el) => {
+      if (el["tag"] !== "column_set") return false;
+      const cols = el["columns"] as Array<{ elements: Array<Record<string, unknown>> }>;
+      return cols.length === 2 && cols[0]?.elements[0]?.["tag"] === "markdown";
+    });
+    // 两个会话各一行，每行是「描述 + 按钮」，不是「描述」「按钮」两行。
+    expect(rows).toHaveLength(2);
+  });
+
+  test("deny is not styled as a destructive action", () => {
+    const card = at.permission({
+      permission: { requestId: "r1", agentId: "a1", kind: "tool", title: "t", summary: "s", mappable: true },
+      agentTitle: "会话",
+    });
+    const deny = collectButtons(card).find(
+      (b) => (callbackValue(b) as { action: string }).action === "deny_permission",
+    );
+    expect(deny!["type"]).not.toBe("danger");
+    const approve = collectButtons(card).find(
+      (b) => (callbackValue(b) as { action: string }).action === "approve_permission",
+    );
+    expect((approve!["text"] as { content: string }).content).toBe("允许本次");
+  });
+
+  test("command reference stays one block so list lines do not gain paragraph spacing", () => {
+    const card = at.help({ commands: true });
+    const blocks = (card["body"] as { elements: Array<{ content: string }> }).elements.filter(
+      (e) => typeof e.content === "string" && e.content.includes("/history more"),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.content.split("\n")).toHaveLength(5);
   });
 });

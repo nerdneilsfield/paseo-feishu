@@ -25,6 +25,20 @@ const STATUS_TEXT: Record<AgentStatus, string> = {
   unknown: "未知",
 };
 
+/** 只有这两个阶段是在跑；其余阶段没有正文就是真的没有。 */
+const IN_PROGRESS = new Set(["处理中", "正在使用工具"]);
+
+/** 回复卡标题配色只表达「要不要你动手」，其余保持中性。 */
+const PHASE_TEMPLATE: Record<string, string> = {
+  "处理中": "blue",
+  "正在使用工具": "blue",
+  "等待授权": "orange",
+  "等待回答（请回 Paseo）": "orange",
+  "已完成": "green",
+  "失败": "red",
+  "已取消": "grey",
+};
+
 function md(content: string): Record<string, unknown> {
   return { tag: "markdown", content };
 }
@@ -90,6 +104,17 @@ function formatTime(ts: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 活动时间读相对值：判断「新不新」时不需要换算日期。 */
+function formatRelative(ts: number, now: number): string {
+  if (ts <= 0) return "—";
+  const diff = Math.max(0, now - ts);
+  if (diff < 10_000) return "刚刚";
+  if (diff < 60_000) return `${Math.floor(diff / 1_000)} 秒前`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
+}
+
 /** 当前绑定置顶，其余按 lastActivityAt 倒序、相同时间按 id 排序。 */
 function sortAgents(agents: AgentSummary[], currentAgentId: string | null): AgentSummary[] {
   return [...agents].sort((a, b) => {
@@ -101,22 +126,49 @@ function sortAgents(agents: AgentSummary[], currentAgentId: string | null): Agen
   });
 }
 
-function agentLine(a: AgentSummary): string {
-  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${STATUS_TEXT[a.status]}\n目录：${oneLine(a.cwdLabel)}\n最近活动：${formatTime(a.lastActivityAt)}`;
+function agentLine(a: AgentSummary, now: number): string {
+  return `**${oneLine(a.title)}**\n${oneLine(a.provider)} · ${STATUS_TEXT[a.status]}\n目录：${oneLine(a.cwdLabel)}\n最近活动：${formatRelative(a.lastActivityAt, now)}`;
 }
 
-export function createCardBuilders(): CardBuilders {
+/** 选择卡的一行：标题加元数据。一行一条，免得每个会话占两屏。 */
+function agentRow(a: AgentSummary, now: number): string {
+  const meta = [oneLine(a.provider), STATUS_TEXT[a.status], oneLine(a.cwdLabel), formatRelative(a.lastActivityAt, now)];
+  return `**${oneLine(a.title)}**\n${meta.join(" · ")}`;
+}
+
+function splitRow(content: Record<string, unknown>, action: Record<string, unknown>): Record<string, unknown> {
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    columns: [
+      { tag: "column", width: "weighted", weight: 4, elements: [content] },
+      { tag: "column", width: "weighted", weight: 1, elements: [action] },
+    ],
+  };
+}
+
+export function createCardBuilders(now: () => number = Date.now): CardBuilders {
   return {
     reply(input) {
+      const busy = IN_PROGRESS.has(input.phase);
+      const empty = busy ? "等待公开进展…" : "暂无公开助手内容";
       return {
         schema: SCHEMA,
-        header: { title: { tag: "plain_text", content: `Paseo · ${input.phase}` }, template: "grey" },
-        body: { elements: [
-          md(`**${oneLine(input.title).slice(0, 200)}**\n最近事件：${formatTime(input.updatedAt)}`),
-          ...(input.reason ? [md(`原因：${input.reason}`)] : []),
-          md(input.text || "暂无公开助手内容"),
-          ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
-        ] },
+        header: {
+          title: { tag: "plain_text", content: `Paseo · ${input.phase}` },
+          template: PHASE_TEMPLATE[input.phase] ?? "grey",
+        },
+        body: {
+          elements: [
+            // 身份行在前、正文在后：手机上一眼就知道这是哪个会话的哪一轮。
+            md(`**${oneLine(input.title).slice(0, 200)}**`),
+            ...(input.reason ? [md(`原因：${input.reason}`)] : []),
+            md(input.text || empty),
+            ...(input.incomplete ? [md("进展不完整，请回 Paseo 核对完整内容。")] : []),
+            // 时间放到末尾：它不决定用户下一步做什么，不该占第一屏。
+            md(`最近事件：${formatRelative(input.updatedAt, now())}`),
+          ],
+        },
       };
     },
     help({ commands }) {
@@ -124,20 +176,21 @@ export function createCardBuilders(): CardBuilders {
         schema: SCHEMA,
         header: { title: { tag: "plain_text", content: commands ? "Paseo · 命令说明" : "Paseo · 帮助" }, template: "grey" },
         body: { elements: [
-          ...(commands ? [
-            "`/help`：打开帮助",
-            "`/sessions`：选择会话",
-            "`/status`：查看状态",
-            "`/history`：最近历史",
-            "`/history more`：更早历史",
-          ].map(md) : []),
+          // 一个块里写成列表：每个命令单独成块会在段落间拉出多余间距。
+          ...(commands ? [md([
+            "`/help` 打开帮助",
+            "`/sessions` 选择会话",
+            "`/status` 查看状态",
+            "`/history` 最近历史",
+            "`/history more` 更早历史",
+          ].join("\n"))] : []),
           md("选择下方操作。绑定后，普通文字会发送到当前会话。"),
           ...navigation(commands ? "commands" : "help"),
         ] },
       };
     },
     history({ agent, messages, hasOlder }) {
-      const heading = excerpt(agentLine(agent), 500);
+      const heading = excerpt(agentLine(agent, now()), 500);
       const elements = [md(heading)];
       for (const message of messages) {
         const label = `**${message.role === "user" ? "用户" : "助手"}** · ${formatTime(Date.parse(message.timestamp))}\n`;
@@ -145,12 +198,17 @@ export function createCardBuilders(): CardBuilders {
       }
       if (!messages.length) elements.push(md("本次扫描范围没有用户或助手消息。"));
       const value = { action: "history_page" };
+      // 「更早」是主操作，放在第一个；没有更早时只留「回到最新」。
       elements.push(...actionRows([
-        ...(hasOlder ? [button("更早", { latest: false, ...value })] : []),
+        ...(hasOlder ? [button("更早", { latest: false, ...value }, "primary")] : []),
         button("回到最新", { latest: true, ...value }),
       ]));
       elements.push(...navigation("history"));
-      return { schema: SCHEMA, header: { title: { tag: "plain_text", content: "Paseo · 会话历史（摘录）" }, template: "grey" }, body: { elements } };
+      return {
+        schema: SCHEMA,
+        header: { title: { tag: "plain_text", content: "Paseo · 会话历史（摘录）" }, template: "grey" },
+        body: { elements },
+      };
     },
     picker(input) {
       const { agents, page, pickerRevision, currentAgentId, connected } = input;
@@ -160,27 +218,23 @@ export function createCardBuilders(): CardBuilders {
       const items = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
       const elements: Array<Record<string, unknown>> = [];
-      elements.push(
-        md(connected ? `已连接 · ${agents.length} 个会话` : "⚠️ Paseo 未连接，操作不可用"),
-      );
-      if (currentAgentId !== null) {
-        const cur = sorted.find((a) => a.id === currentAgentId);
-        if (cur !== undefined) elements.push(md(`当前会话：${oneLine(cur.title)}`));
-      }
-      if (items.length === 0) {
-        elements.push(md("目前没有可用的已有会话。请先在 Paseo 创建会话"));
+      if (!connected) elements.push(md("⚠️ Paseo 未连接，操作不可用"));
+      else if (agents.length > 0) elements.push(md(`${agents.length} 个会话`));
+      if (items.length === 0 && connected) {
+        elements.push(md("目前没有可用的已有会话。请先在 Paseo 创建会话。"));
       }
       for (const a of items) {
         const isCurrent = a.id === currentAgentId;
-        elements.push(md(agentLine(a)));
+        const row = md(agentRow(a, now()));
+        // 同一栅格：当前会话不给按钮（点了只会重发同一张卡），但右列保留占位，否则标题会错位。
         elements.push(
-          ...actionRows([
-            button(
-              isCurrent ? "继续此会话" : "切换到此会话",
-              { action: "select_agent", agentId: a.id, pickerRevision },
-              "default",
-            ),
-          ]),
+          isCurrent
+            ? splitRow(row, md("当前"))
+            : splitRow(row, button(
+                "切换",
+                { action: "select_agent", agentId: a.id, pickerRevision },
+                "primary",
+              )),
         );
       }
       const pager: Array<Record<string, unknown>> = [];
@@ -191,6 +245,7 @@ export function createCardBuilders(): CardBuilders {
         pager.push(button("下一页", { action: "page_agents", page: safePage + 1, pickerRevision }));
       }
       pager.push(button("刷新", { action: "refresh_agents", pickerRevision }));
+      // 页码只说明已经拿到的范围，放按钮上方一行，不占一块。
       if (totalPages > 1) elements.push(md(`第 ${safePage + 1}/${totalPages} 页`));
       elements.push(...actionRows(pager));
       elements.push(...navigation("sessions"));
@@ -215,7 +270,7 @@ export function createCardBuilders(): CardBuilders {
         },
         body: {
           elements: [
-            md(agentLine(agent)),
+            md(agentLine(agent, now())),
             md("后续消息将发送到此会话。"),
             ...navigation("status"),
           ],
@@ -256,11 +311,13 @@ export function createCardBuilders(): CardBuilders {
             md(`**${oneLine(agentTitle)}**`),
             // 只展示 summary：不带环境变量、完整输出或 Paseo 内部动作 ID。
             md(permission.summary),
-            md(`请求 ${shortId}`),
             ...actionRows([
-              button("允许", approveValue, "primary"),
-              button("拒绝", denyValue, "danger"),
+              // 拒绝是安全退出，不该用红色 danger；把强调留给真正要执行的那一边。
+              button("允许本次", approveValue, "primary"),
+              button("拒绝", denyValue),
             ]),
+            // 请求 ID 是排错线索，不是决策信息，放最后。
+            md(`请求 ${shortId}`),
           ],
         },
       };

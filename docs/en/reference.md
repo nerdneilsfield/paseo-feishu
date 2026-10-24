@@ -74,17 +74,21 @@ After a message is sent to the agent, the bot replies with one of four results:
 
 | Card | Title | Buttons |
 | --- | --- | --- |
-| Session picker | Paseo · 选择会话 | One **切换到此会话** (switch to this session) per agent, shown as **继续此会话** (continue this session) for the bound agent; **上一页** (previous) and **下一页** (next); **刷新** (refresh). |
+| Session picker | Paseo · 选择会话 | One **切换** (switch) per unbound agent, a **当前** (current) label in that place for the bound agent; **上一页** (previous) and **下一页** (next); **刷新** (refresh). |
 | Current session | Paseo · 当前会话 | **选择会话** (choose session), **历史** (history), **命令说明** (commands). |
 | Help | Paseo · 帮助 | The four local navigation buttons. |
 | Commands | Paseo · 命令说明 | The command list, plus **帮助** (help) and the other local navigation buttons. |
 | History | Paseo · 会话历史（摘录） | **更早** (earlier, when available), **回到最新** (latest), and local navigation. |
-| Approval request | Paseo · 审批请求 | **允许** (allow) and **拒绝** (deny). |
+| Approval request | Paseo · 审批请求 | **允许本次** (allow once) and **拒绝** (deny). |
 | Approval handled | Paseo · 审批已处理 | None. |
 
-Buttons use at most two equal-width columns per row. A single button fills its row, with the native centered label. Local navigation never points back at the card it is on: the current-session card has no **状态** (status) button, and the commands card returns to the help card with **帮助**.
+Buttons use at most two equal-width columns per row. A single button fills its row, with the native centered label. Deny is a plain button, not a red one: declining is the safe exit, so emphasis stays on the action that actually runs something. Local navigation never points back at the card it is on: the current-session card has no **状态** (status) button, and the commands card returns to the help card with **帮助**.
 
 The picker shows 5 agents per page. The bound agent comes first. The others are ordered from the most recent to the least recent activity. An agent's status appears as one of 运行中 (running), 空闲 (idle), 异常 (error), 已关闭 (closed), 启动中 (starting), or 未知 (unknown).
+
+Each agent takes one block: a bold title, then provider, status, directory, and relative activity time on a second line, with the **切换** (switch) button in the same row. In that right-hand slot the bound agent shows `当前` (current) instead of a button, because switching to it would only send the same card again; the placeholder keeps every title on the same left edge. Activity times are relative ("2 分钟前") rather than clock times, because the question a picker answers is how recent a session is, not what time it was. The full clock format is still used in history excerpts, where each message needs an absolute time.
+
+The reply card leads with the session title and the assistant text, and closes with the last-event time. Header colour marks only states that need you: 处理中 and 正在使用工具 (working) are blue, 等待授权 and 等待回答 (needs approval or an answer) are orange, 已完成 is green, 失败 is red, and 已取消 is grey. While a turn is running with no public assistant text yet, the body reads 等待公开进展… (waiting for visible progress); a finished turn with no text reads 暂无公开助手内容 (no public assistant content).
 
 The channel checks callback structure and identity once. Session actions check the current card and binding; history paging uses the latest history card’s message ID.
 
@@ -121,7 +125,7 @@ The end-event payload no longer carries the conversation (Paseo 0.13 sends an em
 
 ## Approvals
 
-When you click **允许** or **拒绝**, the plugin:
+When you click **允许本次** or **拒绝**, the plugin:
 
 1. Checks the current agent and chat, then reads the pending request once and verifies its allow/deny actions.
 2. Submits the decision to Paseo.
